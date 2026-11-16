@@ -105,6 +105,7 @@ jobs:
             -p:Version=${{ steps.version.outputs.version }} `
             -p:AssemblyVersion=${{ steps.version.outputs.assembly_version }} `
             -p:FileVersion=${{ steps.version.outputs.assembly_version }} `
+            -p:GitHubRepoUrl="https://github.com/${{ github.repository }}" `
             -o "$env:PUBLISH_DIR"
 
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }

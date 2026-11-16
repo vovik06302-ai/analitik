@@ -33,7 +33,11 @@ public sealed class UpdateService
     private static UpdateManager CreateManager()
     {
         var source = new GithubSource(AppConstants.GitHubRepoUrl, accessToken: null, prerelease: false);
-        return new UpdateManager(source);
+        var options = new UpdateOptions
+        {
+            ExplicitChannel = "win"
+        };
+        return new UpdateManager(source, options);
     }
 
     public async Task<UpdateCheckResult> CheckForUpdatesAsync()
@@ -47,13 +51,15 @@ public sealed class UpdateService
                 return new UpdateCheckResult
                 {
                     Status = UpdateCheckStatus.NotInstalled,
-                    Message = "Приложение запущено в портативном/отладочном режиме (без установщика Velopack)."
+                    Message = $"Приложение запущено без установщика Velopack. Установите свежий релиз из {AppConstants.GitHubRepoUrl}/releases/latest."
                 };
             }
 
+            _logger.Info($"Проверка обновлений: repo={AppConstants.GitHubRepoUrl}, current={mgr.CurrentVersion}, channel={mgr.Channel}");
             var updateInfo = await mgr.CheckForUpdatesAsync();
             if (updateInfo is null)
             {
+                _logger.Info($"Обновлений не найдено: установлена актуальная версия v{mgr.CurrentVersion}.");
                 return new UpdateCheckResult
                 {
                     Status = UpdateCheckStatus.UpToDate,

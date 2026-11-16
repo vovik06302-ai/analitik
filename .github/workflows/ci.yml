@@ -40,6 +40,7 @@ jobs:
             -c Release `
             -r win-x64 `
             --self-contained true `
+            -p:GitHubRepoUrl="https://github.com/${{ github.repository }}" `
             -o ./publish
 
       - name: Upload build artifact
