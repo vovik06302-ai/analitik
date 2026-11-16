@@ -13,6 +13,7 @@
     <conv:DirectionToGeometryConverter x:Key="DirToGeo" />
     <conv:NullablePriceConverter x:Key="PriceFmt" />
     <conv:ProviderEqualsConverter x:Key="ProviderEquals" />
+    <conv:ConnectionStatusToBrushConverter x:Key="ConnToBrush" />
 
     <!-- Color Palette -->
     <Color x:Key="BgDeepColor">#0A0E17</Color>
@@ -290,7 +291,7 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ComboBox">
-                    <Grid>
+                    <Grid x:Name="RootGrid">
                         <ToggleButton x:Name="ToggleButton"
                                       Focusable="False"
                                       IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
@@ -341,6 +342,11 @@
                             </Border>
                         </Popup>
                     </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="RootGrid" Property="Opacity" Value="0.5" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>

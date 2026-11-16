@@ -52,26 +52,72 @@
 
                     <!-- Ollama Settings -->
                     <StackPanel Visibility="{Binding Provider, Converter={StaticResource ProviderEquals}, ConverterParameter=Ollama}">
+                        <Border Background="#0E1420"
+                                BorderBrush="{StaticResource BorderSubtleBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="10,8"
+                                Margin="0,0,0,12"
+                                ToolTip="{Binding OllamaTroubleshootingTooltip}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Ellipse Grid.Column="0"
+                                         Width="9" Height="9"
+                                         Margin="0,0,8,0"
+                                         VerticalAlignment="Center"
+                                         Fill="{Binding OllamaConnectionState, Converter={StaticResource ConnToBrush}}" />
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding OllamaStatusText}"
+                                           FontSize="12.5"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center" />
+                                <Border Grid.Column="2"
+                                        Width="18" Height="18"
+                                        CornerRadius="9"
+                                        Background="#1B263B"
+                                        BorderBrush="{StaticResource BorderSubtleBrush}"
+                                        BorderThickness="1"
+                                        VerticalAlignment="Center">
+                                    <TextBlock Text="?"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                        </Border>
+
                         <TextBlock Text="{Binding [SettingsOllamaUrl], Source={x:Static services:LocalizationService.Instance}}"
                                    Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,6" />
                         <TextBox Text="{Binding OllamaUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" />
 
                         <TextBlock Text="{Binding [SettingsOllamaModel], Source={x:Static services:LocalizationService.Instance}}"
                                    Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,6" />
-                        <Grid>
+                        <Grid Margin="0,0,0,10">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="10" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <ComboBox Grid.Column="0"
-                                      ItemsSource="{Binding AvailableOllamaModels}"
-                                      SelectedItem="{Binding OllamaModel}" />
+                                      ItemsSource="{Binding AvailableModels}"
+                                      SelectedItem="{Binding SelectedOllamaListItem}" />
                             <Button Grid.Column="2"
                                     Content="{Binding [BtnRefreshModels], Source={x:Static services:LocalizationService.Instance}}"
+                                    ToolTip="{Binding [BtnRefreshModelsTooltip], Source={x:Static services:LocalizationService.Instance}}"
                                     Style="{StaticResource SecondaryButtonStyle}"
                                     Command="{Binding RefreshOllamaModelsCommand}" />
                         </Grid>
+
+                        <TextBlock Text="{Binding [SettingsOllamaModelManual], Source={x:Static services:LocalizationService.Instance}}"
+                                   Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,6" />
+                        <TextBox Text="{Binding OllamaModel, UpdateSourceTrigger=PropertyChanged}" />
+
                         <TextBlock Text="{Binding OllamaModelsHint}"
                                    Foreground="{StaticResource WarningBrush}"
                                    FontSize="12"
@@ -82,11 +128,65 @@
 
                     <!-- Claude Settings -->
                     <StackPanel Visibility="{Binding Provider, Converter={StaticResource ProviderEquals}, ConverterParameter=Claude}">
+                        <Border Background="#0E1420"
+                                BorderBrush="{StaticResource BorderSubtleBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="10,8"
+                                Margin="0,0,0,12"
+                                ToolTip="{Binding ClaudeTroubleshootingTooltip}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Ellipse Grid.Column="0"
+                                         Width="9" Height="9"
+                                         Margin="0,0,8,0"
+                                         VerticalAlignment="Center"
+                                         Fill="{Binding ClaudeConnectionState, Converter={StaticResource ConnToBrush}}" />
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding ClaudeStatusText}"
+                                           FontSize="12.5"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center" />
+                                <Border Grid.Column="2"
+                                        Width="18" Height="18"
+                                        CornerRadius="9"
+                                        Background="#1B263B"
+                                        BorderBrush="{StaticResource BorderSubtleBrush}"
+                                        BorderThickness="1"
+                                        VerticalAlignment="Center">
+                                    <TextBlock Text="?"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Border>
+                                <Button Grid.Column="4"
+                                        Content="{Binding [BtnTestConnection], Source={x:Static services:LocalizationService.Instance}}"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        Padding="10,5"
+                                        FontSize="12"
+                                        Command="{Binding TestClaudeConnectionCommand}" />
+                            </Grid>
+                        </Border>
+
                         <TextBlock Text="{Binding [SettingsClaudeKey], Source={x:Static services:LocalizationService.Instance}}"
                                    Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,6" />
                         <TextBox Text="{Binding ClaudeApiKey, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" />
 
                         <TextBlock Text="{Binding [SettingsClaudeModel], Source={x:Static services:LocalizationService.Instance}}"
+                                   Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,6" />
+                        <ComboBox ItemsSource="{Binding AvailableClaudeModels}"
+                                  SelectedItem="{Binding SelectedClaudeListItem}"
+                                  Margin="0,0,0,10" />
+
+                        <TextBlock Text="{Binding [SettingsClaudeModelManual], Source={x:Static services:LocalizationService.Instance}}"
                                    Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,6" />
                         <TextBox Text="{Binding ClaudeModel, UpdateSourceTrigger=PropertyChanged}" />
                     </StackPanel>

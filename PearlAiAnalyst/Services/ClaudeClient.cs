@@ -10,6 +10,7 @@ namespace PearlAiAnalyst.Services;
 public sealed class ClaudeClient
 {
     private const string MessagesEndpoint = "https://api.anthropic.com/v1/messages";
+    private const string ModelsEndpoint = "https://api.anthropic.com/v1/models";
     private readonly HttpClient _httpClient;
     private readonly LoggerService _logger;
 
@@ -20,6 +21,106 @@ public sealed class ClaudeClient
         {
             Timeout = TimeSpan.FromMinutes(2)
         };
+    }
+
+    public async Task<ClaudeStatus> CheckStatusAsync(string? apiKey, CancellationToken cancellationToken = default)
+    {
+        var loc = LocalizationService.Instance;
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new ClaudeStatus
+            {
+                State = ServiceConnectionState.NotConfigured,
+                IsConnected = false,
+                StatusMessage = loc["ClaudeNotConfigured"],
+                TroubleshootingTooltip = loc["ClaudeTooltipNoKey"]
+            };
+        }
+
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(6));
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, ModelsEndpoint);
+            request.Headers.Add("x-api-key", apiKey.Trim());
+            request.Headers.Add("anthropic-version", "2023-06-01");
+
+            using var response = await _httpClient.SendAsync(request, cts.Token);
+            var code = (int)response.StatusCode;
+
+            if (response.IsSuccessStatusCode)
+            {
+                return new ClaudeStatus
+                {
+                    State = ServiceConnectionState.Connected,
+                    IsConnected = true,
+                    StatusMessage = loc["ClaudeConnected"],
+                    TroubleshootingTooltip = loc["ClaudeTooltipConnected"]
+                };
+            }
+
+            if (code is 401 or 403)
+            {
+                return new ClaudeStatus
+                {
+                    State = ServiceConnectionState.Error,
+                    IsConnected = false,
+                    StatusMessage = string.Format(loc["ClaudeAuthError"], code),
+                    TroubleshootingTooltip = loc["ClaudeTooltipAuthError"]
+                };
+            }
+
+            if (code == 429)
+            {
+                return new ClaudeStatus
+                {
+                    State = ServiceConnectionState.Error,
+                    IsConnected = false,
+                    StatusMessage = loc["ClaudeRateLimit"],
+                    TroubleshootingTooltip = loc["ClaudeTooltipRateLimit"]
+                };
+            }
+
+            return new ClaudeStatus
+            {
+                State = ServiceConnectionState.Error,
+                IsConnected = false,
+                StatusMessage = string.Format(loc["ClaudeHttpError"], code),
+                TroubleshootingTooltip = string.Format(loc["ClaudeTooltipHttpError"], code)
+            };
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new ClaudeStatus
+            {
+                State = ServiceConnectionState.Error,
+                IsConnected = false,
+                StatusMessage = loc["ClaudeOffline"],
+                TroubleshootingTooltip = loc["ClaudeTooltipTimeout"]
+            };
+        }
+        catch (HttpRequestException ex)
+        {
+            return new ClaudeStatus
+            {
+                State = ServiceConnectionState.Error,
+                IsConnected = false,
+                StatusMessage = loc["ClaudeOffline"],
+                TroubleshootingTooltip = string.Format(loc["ClaudeTooltipNetworkError"], ex.Message)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning($"Ошибка проверки Claude API: {ex.Message}");
+            return new ClaudeStatus
+            {
+                State = ServiceConnectionState.Error,
+                IsConnected = false,
+                StatusMessage = loc["ClaudeOffline"],
+                TroubleshootingTooltip = string.Format(loc["ClaudeTooltipNetworkError"], ex.Message)
+            };
+        }
     }
 
     public async Task<ForecastResult> AnalyzeAsync(

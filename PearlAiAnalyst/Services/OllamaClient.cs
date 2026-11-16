@@ -24,6 +24,7 @@ public sealed class OllamaClient
     public async Task<OllamaStatus> CheckStatusAsync(string baseUrl, CancellationToken cancellationToken = default)
     {
         var normalizedBase = NormalizeBaseUrl(baseUrl);
+        var loc = LocalizationService.Instance;
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -34,9 +35,11 @@ public sealed class OllamaClient
             {
                 return new OllamaStatus
                 {
+                    State = ServiceConnectionState.Error,
                     IsRunning = false,
-                    StatusMessage = $"Ollama ответил с ошибкой ({(int)response.StatusCode})",
-                    HintMessage = LocalizationService.Instance["OllamaOfflineHint"]
+                    StatusMessage = $"Ollama: ошибка ({(int)response.StatusCode})",
+                    HintMessage = loc["OllamaOfflineHint"],
+                    TroubleshootingTooltip = string.Format(loc["OllamaTooltipHttpError"], (int)response.StatusCode, normalizedBase)
                 };
             }
 
@@ -56,23 +59,40 @@ public sealed class OllamaClient
 
             return new OllamaStatus
             {
+                State = models.Count > 0 ? ServiceConnectionState.Connected : ServiceConnectionState.NotConfigured,
                 IsRunning = true,
                 StatusMessage = models.Count > 0
                     ? $"Ollama запущен • моделей: {models.Count}"
-                    : "Ollama запущен • модели не установлены",
+                    : "Ollama запущен • нет моделей",
                 HintMessage = models.Count == 0
                     ? "Установите модель с поддержкой изображений: ollama pull qwen2.5vl:32b (или qwen2.5vl:7b)"
                     : string.Empty,
+                TroubleshootingTooltip = models.Count > 0
+                    ? string.Format(loc["OllamaTooltipConnected"], normalizedBase, models.Count)
+                    : loc["OllamaTooltipNoModels"],
                 InstalledModels = models
             };
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return new OllamaStatus
             {
+                State = ServiceConnectionState.Error,
                 IsRunning = false,
-                StatusMessage = LocalizationService.Instance["OllamaOffline"],
-                HintMessage = LocalizationService.Instance["OllamaOfflineHint"]
+                StatusMessage = loc["OllamaOffline"],
+                HintMessage = loc["OllamaOfflineHint"],
+                TroubleshootingTooltip = string.Format(loc["OllamaTooltipTimeout"], normalizedBase)
+            };
+        }
+        catch (HttpRequestException ex)
+        {
+            return new OllamaStatus
+            {
+                State = ServiceConnectionState.Error,
+                IsRunning = false,
+                StatusMessage = loc["OllamaOffline"],
+                HintMessage = loc["OllamaOfflineHint"],
+                TroubleshootingTooltip = string.Format(loc["OllamaTooltipConnectionError"], normalizedBase, ex.Message)
             };
         }
         catch (Exception ex)
@@ -80,9 +100,11 @@ public sealed class OllamaClient
             _logger.Warning($"Ошибка проверки Ollama: {ex.Message}");
             return new OllamaStatus
             {
+                State = ServiceConnectionState.Error,
                 IsRunning = false,
-                StatusMessage = LocalizationService.Instance["OllamaOffline"],
-                HintMessage = LocalizationService.Instance["OllamaOfflineHint"]
+                StatusMessage = loc["OllamaOffline"],
+                HintMessage = loc["OllamaOfflineHint"],
+                TroubleshootingTooltip = string.Format(loc["OllamaTooltipConnectionError"], normalizedBase, ex.Message)
             };
         }
     }

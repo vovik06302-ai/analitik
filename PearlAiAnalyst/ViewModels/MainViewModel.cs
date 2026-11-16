@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -23,16 +24,22 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private DateTimeOffset? _nextAutoRunUtc;
     private ForecastDirection _lastNotifiedDirection = ForecastDirection.Unknown;
     private CancellationTokenSource? _analysisCts;
+    private bool _isSyncingModelSelection;
 
     public ForecastViewModel Forecast { get; }
     public NewsViewModel News { get; }
     public HistoryViewModel History { get; }
     public SettingsViewModel Settings { get; }
 
+    public ObservableCollection<string> ActiveModels { get; } = [];
+    public IReadOnlyList<AiProviderType> Providers { get; } = [AiProviderType.Ollama, AiProviderType.Claude];
+
     [ObservableProperty]
     private int _selectedTabIndex;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanChangeProvider))]
+    [NotifyPropertyChangedFor(nameof(CanSelectModel))]
     private bool _isAnalyzing;
 
     [ObservableProperty]
@@ -48,10 +55,41 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool _isOllamaRunning;
 
     [ObservableProperty]
-    private string _ollamaStatusText = "Проверка Ollama...";
+    private ServiceConnectionState _ollamaConnectionState = ServiceConnectionState.Checking;
+
+    [ObservableProperty]
+    private string _ollamaStatusText = LocalizationService.Instance["ConnectionChecking"];
 
     [ObservableProperty]
     private string _ollamaOfflineHint = string.Empty;
+
+    [ObservableProperty]
+    private string _ollamaTroubleshootingTooltip = LocalizationService.Instance["ConnectionChecking"];
+
+    [ObservableProperty]
+    private bool _isClaudeConnected;
+
+    [ObservableProperty]
+    private ServiceConnectionState _claudeConnectionState = ServiceConnectionState.Checking;
+
+    [ObservableProperty]
+    private string _claudeStatusText = LocalizationService.Instance["ConnectionChecking"];
+
+    [ObservableProperty]
+    private string _claudeTroubleshootingTooltip = LocalizationService.Instance["ConnectionChecking"];
+
+    [ObservableProperty]
+    private AiProviderType _selectedProvider = AiProviderType.Ollama;
+
+    [ObservableProperty]
+    private string? _selectedModel;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSelectModel))]
+    private bool _hasAvailableModels;
+
+    [ObservableProperty]
+    private string _modelSelectorHint = string.Empty;
 
     [ObservableProperty]
     private bool _isAutoModeActive;
@@ -62,6 +100,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _regionBadgeText = "Область: не задана";
 
+    public bool CanChangeProvider => !IsAnalyzing;
+    public bool CanSelectModel => !IsAnalyzing && HasAvailableModels;
     public string AppVersionText => $"v{AppConstants.CurrentVersion}";
 
     public event Func<Task<CaptureRegion?>>? SelectRegionOverlayRequested;
@@ -95,9 +135,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Settings = new SettingsViewModel(
             settingsService,
             ollamaClient,
+            claudeClient,
             SelectRegionAsync,
             CheckUpdatesAsync,
             ApplySettings);
+        Settings.ModelsRefreshed += () => SyncModelSelector(_settingsService.Load());
 
         var initialSettings = _settingsService.Load();
         LocalizationService.Instance.SetLanguage(initialSettings.Language);
@@ -113,7 +155,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _autoCountdownTimer.Start();
 
         _ollamaPollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
-        _ollamaPollTimer.Tick += async (_, _) => await RefreshOllamaStatusAsync();
+        _ollamaPollTimer.Tick += async (_, _) => await RefreshConnectionsInternalAsync(forceModelRefresh: false);
         _ollamaPollTimer.Start();
     }
 
@@ -122,10 +164,42 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         TabChanged?.Invoke();
     }
 
+    partial void OnSelectedProviderChanged(AiProviderType value)
+    {
+        if (_isSyncingModelSelection)
+            return;
+
+        var settings = _settingsService.Load();
+        settings.Provider = value;
+        _settingsService.Save(settings);
+
+        Settings.Provider = value;
+        SyncModelSelector(settings);
+    }
+
+    partial void OnSelectedModelChanged(string? value)
+    {
+        if (_isSyncingModelSelection || string.IsNullOrWhiteSpace(value))
+            return;
+
+        var settings = _settingsService.Load();
+        if (SelectedProvider == AiProviderType.Claude)
+        {
+            settings.ClaudeModel = value;
+            Settings.ClaudeModel = value;
+        }
+        else
+        {
+            settings.OllamaModel = value;
+            Settings.OllamaModel = value;
+        }
+
+        _settingsService.Save(settings);
+    }
+
     public async Task InitializeAsync()
     {
-        await RefreshOllamaStatusAsync();
-        await Settings.RefreshOllamaModelsAsync();
+        await RefreshConnectionsInternalAsync(forceModelRefresh: true);
         await History.LoadHistoryAsync();
         await News.RefreshNewsAsync();
         await CheckUpdatesAsync(showUpToDateMessage: false);
@@ -146,6 +220,67 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             _nextAutoRunUtc = null;
             AutoCountdownText = string.Empty;
+        }
+
+        SyncModelSelector(settings);
+        _ = RefreshConnectionsInternalAsync(forceModelRefresh: false);
+    }
+
+    private void SyncModelSelector(AppSettings settings)
+    {
+        _isSyncingModelSelection = true;
+        try
+        {
+            SelectedProvider = settings.Provider;
+            var targetModels = new List<string>();
+            string? targetSelected = null;
+
+            if (settings.Provider == AiProviderType.Claude)
+            {
+                targetModels.AddRange(AppConstants.DefaultClaudeModels);
+                if (!string.IsNullOrWhiteSpace(settings.ClaudeModel) &&
+                    !targetModels.Contains(settings.ClaudeModel, StringComparer.Ordinal))
+                {
+                    targetModels.Add(settings.ClaudeModel);
+                }
+
+                targetSelected = settings.ClaudeModel;
+                ModelSelectorHint = string.Empty;
+            }
+            else
+            {
+                targetModels.AddRange(Settings.AvailableModels);
+                if (targetModels.Count > 0)
+                {
+                    targetSelected = targetModels.Contains(Settings.OllamaModel)
+                        ? Settings.OllamaModel
+                        : targetModels.Contains(settings.OllamaModel)
+                            ? settings.OllamaModel
+                            : targetModels[0];
+                    ModelSelectorHint = string.Empty;
+                }
+                else
+                {
+                    targetSelected = null;
+                    ModelSelectorHint = IsOllamaRunning
+                        ? LocalizationService.Instance["NoOllamaModelsShort"]
+                        : LocalizationService.Instance["OllamaOffline"];
+                }
+            }
+
+            if (!ActiveModels.SequenceEqual(targetModels))
+            {
+                ActiveModels.Clear();
+                foreach (var model in targetModels)
+                    ActiveModels.Add(model);
+            }
+
+            HasAvailableModels = ActiveModels.Count > 0;
+            SelectedModel = targetSelected;
+        }
+        finally
+        {
+            _isSyncingModelSelection = false;
         }
     }
 
@@ -185,13 +320,43 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    public async Task RefreshOllamaStatusAsync()
+    public Task RefreshConnectionsAsync() => RefreshConnectionsInternalAsync(forceModelRefresh: true);
+
+    [RelayCommand]
+    public Task RefreshOllamaStatusAsync() => RefreshOllamaStatusInternalAsync(forceModelRefresh: true);
+
+    private async Task RefreshConnectionsInternalAsync(bool forceModelRefresh)
+    {
+        await Task.WhenAll(
+            RefreshOllamaStatusInternalAsync(forceModelRefresh),
+            RefreshClaudeStatusAsync());
+    }
+
+    private async Task RefreshOllamaStatusInternalAsync(bool forceModelRefresh)
     {
         var settings = _settingsService.Load();
         var status = await _ollamaClient.CheckStatusAsync(settings.OllamaUrl);
         IsOllamaRunning = status.IsRunning;
+        OllamaConnectionState = status.State;
         OllamaStatusText = status.StatusMessage;
         OllamaOfflineHint = status.IsRunning ? string.Empty : status.HintMessage;
+        OllamaTroubleshootingTooltip = status.TroubleshootingTooltip;
+
+        if (forceModelRefresh)
+            await Settings.RefreshOllamaModelsAsync();
+        else
+            await Settings.SyncOllamaModelsFromBackgroundAsync();
+    }
+
+    private async Task RefreshClaudeStatusAsync()
+    {
+        var apiKey = _settingsService.LoadClaudeApiKey();
+        var status = await _claudeClient.CheckStatusAsync(apiKey);
+        IsClaudeConnected = status.IsConnected;
+        ClaudeConnectionState = status.State;
+        ClaudeStatusText = status.StatusMessage;
+        ClaudeTroubleshootingTooltip = status.TroubleshootingTooltip;
+        Settings.ApplyClaudeStatus(status);
     }
 
     [RelayCommand]

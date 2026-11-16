@@ -14,6 +14,15 @@ public static class AppConstants
     public const string FallbackOllamaModel = "qwen2.5vl:7b";
     public const string DefaultClaudeModel = "claude-sonnet-4-20250514";
 
+    public static readonly string[] DefaultClaudeModels =
+    [
+        "claude-sonnet-4-20250514",
+        "claude-opus-4-20250514",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022"
+    ];
+
     public static readonly string[] DefaultNewsKeywords =
     [
         "Pearl PRL",
