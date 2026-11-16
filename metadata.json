@@ -1,0 +1,6 @@
+{
+  "name": "Pearl AI Analyst",
+  "description": "Нативное Windows-приложение на C#/.NET 10 (WPF) для визуального и новостного ИИ-анализа графика PEARL/USDT через Ollama и Claude API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

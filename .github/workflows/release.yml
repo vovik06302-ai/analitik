@@ -1,0 +1,88 @@
+name: Build and Release Windows Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Extract version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart('v')
+          $numericVer = ($ver -split '-')[0]
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+          echo "assembly_version=$numericVer.0" >> $env:GITHUB_OUTPUT
+
+      - name: Publish self-contained win-x64
+        shell: pwsh
+        run: |
+          dotnet publish PearlAiAnalyst/PearlAiAnalyst.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            -p:AssemblyVersion=${{ steps.version.outputs.assembly_version }} `
+            -p:FileVersion=${{ steps.version.outputs.assembly_version }} `
+            -o ./publish
+
+      - name: Install Velopack CLI (vpk)
+        shell: pwsh
+        run: dotnet tool install -g vpk
+
+      - name: Download previous release assets for delta packages
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force -Path ./Releases | Out-Null
+          vpk download github `
+            --repoUrl https://github.com/${{ github.repository }} `
+            --token ${{ secrets.GITHUB_TOKEN }} `
+            --outputDir ./Releases
+
+      - name: Pack installer with Velopack
+        shell: pwsh
+        run: |
+          vpk pack `
+            -u PearlAiAnalyst `
+            -v ${{ steps.version.outputs.version }} `
+            -p ./publish `
+            -e PearlAiAnalyst.exe `
+            -o ./Releases `
+            --packTitle "Pearl AI Analyst" `
+            -c win
+
+          $setup = Get-ChildItem -Path "./Releases" -Filter "*-Setup.exe" | Select-Object -First 1
+          if ($setup -and $setup.Name -ne "PearlAiAnalyst-Setup.exe") {
+            Move-Item -Path $setup.FullName -Destination "./Releases/PearlAiAnalyst-Setup.exe" -Force
+          }
+
+      - name: Upload GitHub Release via Velopack
+        shell: pwsh
+        run: |
+          vpk upload github `
+            --repoUrl https://github.com/${{ github.repository }} `
+            --token ${{ secrets.GITHUB_TOKEN }} `
+            --outputDir ./Releases `
+            --publish `
+            --releaseName "Pearl AI Analyst v${{ steps.version.outputs.version }}" `
+            --tag ${{ github.ref_name }}

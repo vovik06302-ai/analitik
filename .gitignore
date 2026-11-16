@@ -1,0 +1,31 @@
+# .NET / Visual Studio / Rider
+bin/
+obj/
+out/
+publish/
+Releases/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+.idea/
+*.nupkg
+*.snupkg
+*.db
+*.db-shm
+*.db-wal
+*.dpapi
+
+# Logs and environment
+*.log
+.env*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# Node/template ignores
+node_modules/
+build/
+dist/
+coverage/
