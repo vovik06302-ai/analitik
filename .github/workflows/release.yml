@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Версия релиза (например, 1.0.2; если пусто — берётся из .csproj)'
+        description: 'Версия релиза (например, 1.0.3; если пусто — берётся из .csproj)'
         required: false
         default: ''
 
@@ -18,10 +18,10 @@ permissions:
 env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
   DOTNET_NOLOGO: 1
-  PROJECT_PATH: PearlAiAnalyst/PearlAiAnalyst.csproj
-  SOLUTION_PATH: PearlAiAnalyst.sln
-  PUBLISH_DIR: publish/win-x64
-  RELEASES_DIR: Releases
+  PROJECT_PATH: ${{ github.workspace }}\PearlAiAnalyst\PearlAiAnalyst.csproj
+  SOLUTION_PATH: ${{ github.workspace }}\PearlAiAnalyst.sln
+  PUBLISH_DIR: ${{ github.workspace }}\publish\win-x64
+  RELEASES_DIR: ${{ github.workspace }}\Releases
 
 jobs:
   release:
@@ -62,7 +62,7 @@ jobs:
           } else {
             [xml]$csproj = Get-Content $env:PROJECT_PATH
             $ver = ($csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1).ToString().Trim()
-            if ([string]::IsNullOrWhiteSpace($ver)) { $ver = "1.0.2" }
+            if ([string]::IsNullOrWhiteSpace($ver)) { $ver = "1.0.3" }
             $tag = "v$ver"
           }
 
@@ -78,13 +78,17 @@ jobs:
 
       - name: Restore dependencies
         shell: pwsh
-        run: dotnet restore $env:SOLUTION_PATH -r win-x64
+        run: |
+          dotnet restore "$env:SOLUTION_PATH" -r win-x64
+          if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed with exit code $LASTEXITCODE" }
 
       - name: Publish self-contained win-x64
         shell: pwsh
         run: |
-          if (Test-Path $env:PUBLISH_DIR) { Remove-Item $env:PUBLISH_DIR -Recurse -Force }
-          dotnet publish $env:PROJECT_PATH `
+          if (Test-Path "$env:PUBLISH_DIR") { Remove-Item "$env:PUBLISH_DIR" -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path "$env:PUBLISH_DIR" | Out-Null
+
+          dotnet publish "$env:PROJECT_PATH" `
             -c Release `
             -r win-x64 `
             --self-contained true `
@@ -92,11 +96,11 @@ jobs:
             -p:Version=${{ steps.version.outputs.version }} `
             -p:AssemblyVersion=${{ steps.version.outputs.assembly_version }} `
             -p:FileVersion=${{ steps.version.outputs.assembly_version }} `
-            -o $env:PUBLISH_DIR
+            -o "$env:PUBLISH_DIR"
 
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 
-          $exePath = Join-Path $env:PUBLISH_DIR "PearlAiAnalyst.exe"
+          $exePath = Join-Path "$env:PUBLISH_DIR" "PearlAiAnalyst.exe"
           if (-not (Test-Path $exePath)) {
             throw "Expected executable not found at $exePath"
           }
@@ -115,13 +119,13 @@ jobs:
       - name: Download previous release assets for delta packages
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path $env:RELEASES_DIR | Out-Null
+          New-Item -ItemType Directory -Force -Path "$env:RELEASES_DIR" | Out-Null
           try {
             vpk download github `
               --repoUrl "https://github.com/${{ github.repository }}" `
               --token "${{ secrets.GITHUB_TOKEN }}" `
               --channel win `
-              --outputDir $env:RELEASES_DIR
+              --outputDir "$env:RELEASES_DIR"
           } catch {
             Write-Host "No previous Velopack release found or delta download skipped: $_"
           }
@@ -136,14 +140,14 @@ jobs:
           vpk pack `
             --packId PearlAiAnalyst `
             --packVersion "${{ steps.version.outputs.version }}" `
-            --packDir $env:PUBLISH_DIR `
+            --packDir "$env:PUBLISH_DIR" `
             --mainExe PearlAiAnalyst.exe `
-            --outputDir $env:RELEASES_DIR `
+            --outputDir "$env:RELEASES_DIR" `
             --packTitle "Pearl AI Analyst" `
             --channel win
           if ($LASTEXITCODE -ne 0) { throw "vpk pack failed with exit code $LASTEXITCODE" }
 
-          Get-ChildItem -Path $env:RELEASES_DIR | Format-Table Name, Length
+          Get-ChildItem -Path "$env:RELEASES_DIR" | Format-Table Name, Length
 
       - name: Upload GitHub Release via Velopack
         shell: pwsh
@@ -151,7 +155,7 @@ jobs:
           vpk upload github `
             --repoUrl "https://github.com/${{ github.repository }}" `
             --token "${{ secrets.GITHUB_TOKEN }}" `
-            --outputDir $env:RELEASES_DIR `
+            --outputDir "$env:RELEASES_DIR" `
             --publish `
             --releaseName "Pearl AI Analyst v${{ steps.version.outputs.version }}" `
             --tag "${{ steps.version.outputs.tag }}"
@@ -162,20 +166,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $setup = Get-ChildItem -Path $env:RELEASES_DIR -Filter "*-Setup.exe" | Select-Object -First 1
+          $setup = Get-ChildItem -Path "$env:RELEASES_DIR" -Filter "*-Setup.exe" | Select-Object -First 1
           if (-not $setup) {
             throw "No *-Setup.exe produced by vpk pack in $env:RELEASES_DIR"
           }
-          $friendlySetup = Join-Path $env:RELEASES_DIR "PearlAiAnalyst-Setup.exe"
+          $friendlySetup = Join-Path "$env:RELEASES_DIR" "PearlAiAnalyst-Setup.exe"
           if ($setup.Name -ne "PearlAiAnalyst-Setup.exe") {
             Copy-Item -Path $setup.FullName -Destination $friendlySetup -Force
           }
-          gh release upload "${{ steps.version.outputs.tag }}" $friendlySetup --clobber --repo "${{ github.repository }}"
+          gh release upload "${{ steps.version.outputs.tag }}" "$friendlySetup" --clobber --repo "${{ github.repository }}"
           if ($LASTEXITCODE -ne 0) { throw "gh release upload failed with exit code $LASTEXITCODE" }
 
       - name: Upload release artifacts to workflow run
         uses: actions/upload-artifact@v4
         with:
           name: PearlAiAnalyst-Release-${{ steps.version.outputs.version }}
-          path: Releases/
+          path: ${{ github.workspace }}\Releases
           retention-days: 14

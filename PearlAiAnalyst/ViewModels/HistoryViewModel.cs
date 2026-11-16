@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.Win32;
 using PearlAiAnalyst.Models;
 using PearlAiAnalyst.Services;
 
@@ -108,7 +107,7 @@ public sealed partial class HistoryViewModel : ObservableObject
             return;
         }
 
-        var dialog = new SaveFileDialog
+        var dialog = new Microsoft.Win32.SaveFileDialog
         {
             Title = "Экспорт истории прогнозов в CSV",
             Filter = "CSV файлы (*.csv)|*.csv",
