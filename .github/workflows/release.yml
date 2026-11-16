@@ -123,7 +123,8 @@ jobs:
           $toolsDir = Join-Path $env:USERPROFILE ".dotnet\tools"
           echo $toolsDir >> $env:GITHUB_PATH
           $env:PATH = "$toolsDir;$env:PATH"
-          vpk --version
+          vpk -h
+          if ($LASTEXITCODE -ne 0) { throw "vpk CLI verification failed with exit code $LASTEXITCODE" }
 
       - name: Download previous release assets for delta packages
         shell: pwsh
