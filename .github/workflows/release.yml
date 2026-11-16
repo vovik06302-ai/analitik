@@ -5,15 +5,21 @@ on:
     tags:
       - 'v*'
       - 'V*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Версия релиза (например, 1.0.3; если пусто — берётся из .csproj)'
+        description: 'Версия релиза (например, 1.0.11; если пусто — берётся из .csproj)'
         required: false
         default: ''
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
@@ -53,7 +59,10 @@ jobs:
         shell: pwsh
         run: |
           $inputVer = "${{ inputs.version }}".Trim().TrimStart('v', 'V')
-          if ("${{ github.ref_type }}" -eq "tag") {
+          if ("${{ github.event_name }}" -eq "release") {
+            $tag = "${{ github.event.release.tag_name }}"
+            $ver = $tag.TrimStart('v', 'V')
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
             $tag = "${{ github.ref_name }}"
             $ver = $tag.TrimStart('v', 'V')
           } elseif (-not [string]::IsNullOrWhiteSpace($inputVer)) {
@@ -62,7 +71,7 @@ jobs:
           } else {
             [xml]$csproj = Get-Content $env:PROJECT_PATH
             $ver = ($csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1).ToString().Trim()
-            if ([string]::IsNullOrWhiteSpace($ver)) { $ver = "1.0.3" }
+            if ([string]::IsNullOrWhiteSpace($ver)) { $ver = "1.0.11" }
             $tag = "v$ver"
           }
 
@@ -119,6 +128,7 @@ jobs:
       - name: Download previous release assets for delta packages
         shell: pwsh
         run: |
+          if (Test-Path "$env:RELEASES_DIR") { Remove-Item "$env:RELEASES_DIR" -Recurse -Force }
           New-Item -ItemType Directory -Force -Path "$env:RELEASES_DIR" | Out-Null
           try {
             vpk download github `
@@ -137,9 +147,10 @@ jobs:
       - name: Pack installer with Velopack
         shell: pwsh
         run: |
+          $ver = "${{ steps.version.outputs.version }}"
           vpk pack `
             --packId PearlAiAnalyst `
-            --packVersion "${{ steps.version.outputs.version }}" `
+            --packVersion "$ver" `
             --packDir "$env:PUBLISH_DIR" `
             --mainExe PearlAiAnalyst.exe `
             --outputDir "$env:RELEASES_DIR" `
@@ -147,35 +158,111 @@ jobs:
             --channel win
           if ($LASTEXITCODE -ne 0) { throw "vpk pack failed with exit code $LASTEXITCODE" }
 
+          $setup = Get-ChildItem -Path "$env:RELEASES_DIR" -Filter "*-Setup.exe" | Select-Object -First 1
+          if (-not $setup -or $setup.Length -le 0) {
+            throw "vpk pack did not produce a valid *-Setup.exe in $env:RELEASES_DIR"
+          }
+
+          $friendlySetup = Join-Path "$env:RELEASES_DIR" "PearlAiAnalyst-Setup.exe"
+          if ($setup.Name -ne "PearlAiAnalyst-Setup.exe") {
+            Copy-Item -Path $setup.FullName -Destination $friendlySetup -Force
+          }
+
+          $fullPkg = Get-ChildItem -Path "$env:RELEASES_DIR" -Filter "PearlAiAnalyst-$ver-*-full.nupkg" | Select-Object -First 1
+          if (-not $fullPkg) {
+            throw "vpk pack did not produce full update package for version $ver"
+          }
+
+          $winFeed = Join-Path "$env:RELEASES_DIR" "releases.win.json"
+          if (-not (Test-Path $winFeed)) {
+            throw "vpk pack did not produce releases.win.json in $env:RELEASES_DIR"
+          }
+
           Get-ChildItem -Path "$env:RELEASES_DIR" | Format-Table Name, Length
 
       - name: Upload GitHub Release via Velopack
         shell: pwsh
+        continue-on-error: true
         run: |
           vpk upload github `
             --repoUrl "https://github.com/${{ github.repository }}" `
             --token "${{ secrets.GITHUB_TOKEN }}" `
             --outputDir "$env:RELEASES_DIR" `
+            --channel win `
             --publish `
+            --merge `
+            --targetCommitish "${{ github.sha }}" `
             --releaseName "Pearl AI Analyst v${{ steps.version.outputs.version }}" `
             --tag "${{ steps.version.outputs.tag }}"
-          if ($LASTEXITCODE -ne 0) { throw "vpk upload github failed with exit code $LASTEXITCODE" }
 
-      - name: Attach PearlAiAnalyst-Setup.exe alias to GitHub Release
+      - name: Ensure all installer and update assets are published on GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $setup = Get-ChildItem -Path "$env:RELEASES_DIR" -Filter "*-Setup.exe" | Select-Object -First 1
-          if (-not $setup) {
-            throw "No *-Setup.exe produced by vpk pack in $env:RELEASES_DIR"
+          $tag = "${{ steps.version.outputs.tag }}"
+          $ver = "${{ steps.version.outputs.version }}"
+          $repo = "${{ github.repository }}"
+
+          gh release view "$tag" --repo "$repo" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $global:LASTEXITCODE = 0
+            Write-Host "Creating GitHub release $tag..."
+            gh release create "$tag" `
+              --repo "$repo" `
+              --target "${{ github.sha }}" `
+              --title "Pearl AI Analyst v$ver" `
+              --notes "Pearl AI Analyst v$ver (Windows x64 installer and Velopack auto-update packages)."
+            if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
+          } else {
+            gh release edit "$tag" --repo "$repo" --draft=false --title "Pearl AI Analyst v$ver"
+            if ($LASTEXITCODE -ne 0) { throw "gh release edit failed with exit code $LASTEXITCODE" }
           }
-          $friendlySetup = Join-Path "$env:RELEASES_DIR" "PearlAiAnalyst-Setup.exe"
-          if ($setup.Name -ne "PearlAiAnalyst-Setup.exe") {
-            Copy-Item -Path $setup.FullName -Destination $friendlySetup -Force
+
+          $filesToUpload = [System.Collections.Generic.List[string]]::new()
+          foreach ($pattern in @("*-Setup.exe", "PearlAiAnalyst-$ver-*.nupkg", "*-Portable.zip")) {
+            foreach ($item in @(Get-ChildItem -Path "$env:RELEASES_DIR" -Filter $pattern -ErrorAction SilentlyContinue)) {
+              if ($item -and (Test-Path $item.FullName)) {
+                $filesToUpload.Add($item.FullName)
+              }
+            }
           }
-          gh release upload "${{ steps.version.outputs.tag }}" "$friendlySetup" --clobber --repo "${{ github.repository }}"
+
+          foreach ($metaName in @("releases.win.json", "RELEASES", "assets.win.json")) {
+            $metaPath = Join-Path "$env:RELEASES_DIR" $metaName
+            if (Test-Path $metaPath) {
+              $filesToUpload.Add($metaPath)
+            }
+          }
+
+          $uniqueFiles = @($filesToUpload | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+          if ($uniqueFiles.Count -eq 0) {
+            throw "No release files found to upload in $env:RELEASES_DIR"
+          }
+
+          Write-Host "Uploading/verifying release assets:"
+          $uniqueFiles | ForEach-Object { Write-Host " - $_" }
+
+          gh release upload "$tag" @uniqueFiles --clobber --repo "$repo"
           if ($LASTEXITCODE -ne 0) { throw "gh release upload failed with exit code $LASTEXITCODE" }
+
+          $releaseJson = gh release view "$tag" --repo "$repo" --json isDraft,assets | ConvertFrom-Json
+          if ($releaseJson.isDraft) {
+            throw "Release $tag is still a draft after publishing."
+          }
+
+          $assetNames = @($releaseJson.assets | ForEach-Object { $_.name })
+          Write-Host "Published assets on ${tag}: $($assetNames -join ', ')"
+
+          if (-not ($assetNames -match '-Setup\.exe$')) {
+            throw "Verification failed: no *-Setup.exe asset attached to release $tag"
+          }
+          if (-not ($assetNames -contains "releases.win.json")) {
+            throw "Verification failed: releases.win.json is missing from release $tag"
+          }
+          if (-not ($assetNames -match '-full\.nupkg$')) {
+            throw "Verification failed: no *-full.nupkg update package attached to release $tag"
+          }
 
       - name: Upload release artifacts to workflow run
         uses: actions/upload-artifact@v4
