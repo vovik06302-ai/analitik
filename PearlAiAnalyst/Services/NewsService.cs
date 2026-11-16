@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
@@ -7,6 +8,8 @@ using PearlAiAnalyst.Models;
 
 namespace PearlAiAnalyst.Services;
 
+public sealed record NewsFetchResult(List<NewsItem> Items, List<string> Errors);
+
 public sealed class NewsService
 {
     private readonly HttpClient _httpClient;
@@ -15,11 +18,17 @@ public sealed class NewsService
     public NewsService(LoggerService logger)
     {
         _logger = logger;
-        _httpClient = new HttpClient
+        var handler = new SocketsHttpHandler
         {
-            Timeout = TimeSpan.FromSeconds(15)
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            AutomaticDecompression = DecompressionMethods.All
         };
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PearlAiAnalyst/1.0 (+https://github.com/vovik06302-ai/pearl-ai-analyst)");
+        _httpClient = new HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromSeconds(25)
+        };
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PearlAiAnalyst/1.0 (+https://github.com/vovik06302-ai/pearl-rig-core)");
     }
 
     public async Task<List<NewsItem>> FetchNewsAsync(
@@ -27,12 +36,22 @@ public sealed class NewsService
         IEnumerable<string> keywords,
         CancellationToken cancellationToken = default)
     {
+        var result = await FetchNewsWithDiagnosticsAsync(rssFeeds, keywords, cancellationToken);
+        return result.Items;
+    }
+
+    public async Task<NewsFetchResult> FetchNewsWithDiagnosticsAsync(
+        IEnumerable<string> rssFeeds,
+        IEnumerable<string> keywords,
+        CancellationToken cancellationToken = default)
+    {
         var results = new List<NewsItem>();
+        var errors = new ConcurrentBag<string>();
         var fetchTasks = new List<Task<List<NewsItem>>>();
 
         foreach (var feedUrl in rssFeeds.Where(u => !string.IsNullOrWhiteSpace(u)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            fetchTasks.Add(FetchFeedSafeAsync(feedUrl.Trim(), "RSS", cancellationToken));
+            fetchTasks.Add(FetchFeedSafeAsync(feedUrl.Trim(), "RSS", errors, cancellationToken));
         }
 
         foreach (var keyword in keywords.Where(k => !string.IsNullOrWhiteSpace(k)).Distinct(StringComparer.OrdinalIgnoreCase))
@@ -40,7 +59,7 @@ public sealed class NewsService
             var cleanKeyword = keyword.Trim();
             var encodedQuery = Uri.EscapeDataString($"\"{cleanKeyword}\"");
             var googleNewsUrl = $"https://news.google.com/rss/search?q={encodedQuery}&hl=en-US&gl=US&ceid=US:en";
-            fetchTasks.Add(FetchFeedSafeAsync(googleNewsUrl, cleanKeyword, cancellationToken));
+            fetchTasks.Add(FetchFeedSafeAsync(googleNewsUrl, cleanKeyword, errors, cancellationToken));
         }
 
         var batches = await Task.WhenAll(fetchTasks);
@@ -58,10 +77,14 @@ public sealed class NewsService
             .ToList();
 
         _logger.Info($"Загружено новостей: {deduplicated.Count}");
-        return deduplicated;
+        return new NewsFetchResult(deduplicated, errors.Distinct().ToList());
     }
 
-    private async Task<List<NewsItem>> FetchFeedSafeAsync(string url, string queryTag, CancellationToken cancellationToken)
+    private async Task<List<NewsItem>> FetchFeedSafeAsync(
+        string url,
+        string queryTag,
+        ConcurrentBag<string> errors,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -72,23 +95,44 @@ public sealed class NewsService
                 return [];
             }
 
-            using var response = await _httpClient.GetAsync(uri, cancellationToken);
+            using var feedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            feedCts.CancelAfter(TimeSpan.FromSeconds(20));
+
+            using var response = await _httpClient.GetAsync(uri, feedCts.Token);
             if (!response.IsSuccessStatusCode)
             {
+                var statusErr = $"Источник {uri.Host} вернул HTTP {(int)response.StatusCode}.";
                 _logger.Warning($"RSS вернул статус {(int)response.StatusCode}: {url}");
+                errors.Add(statusErr);
                 return [];
             }
 
-            var xmlContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            var xmlContent = await response.Content.ReadAsStringAsync(feedCts.Token);
             return ParseRssOrAtom(xmlContent, uri.Host, queryTag);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
+        catch (TaskCanceledException ex)
+        {
+            var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
+            _logger.Warning($"Таймаут загрузки новостей из {url}: {ex.Message}");
+            errors.Add($"Превышено время ожидания ответа от {host} (20 с).");
+            return [];
+        }
+        catch (OperationCanceledException ex)
+        {
+            var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
+            _logger.Warning($"Таймаут загрузки новостей из {url}: {ex.Message}");
+            errors.Add($"Превышено время ожидания ответа от {host} (20 с).");
+            return [];
+        }
         catch (Exception ex)
         {
+            var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
             _logger.Warning($"Ошибка загрузки новостей из {url}: {ex.Message}");
+            errors.Add($"{host}: {ex.Message}");
             return [];
         }
     }

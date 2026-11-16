@@ -57,8 +57,13 @@ public sealed partial class NewsViewModel : ObservableObject
         try
         {
             var settings = _settingsService.Load();
-            var news = await _newsService.FetchNewsAsync(settings.RssFeeds, settings.NewsKeywords);
-            UpdateFromItems(news);
+            var result = await _newsService.FetchNewsWithDiagnosticsAsync(settings.RssFeeds, settings.NewsKeywords);
+            UpdateFromItems(result.Items);
+
+            if (result.Items.Count == 0 && result.Errors.Count > 0)
+            {
+                ErrorMessage = $"Не удалось загрузить новости: {string.Join(" ", result.Errors)}";
+            }
         }
         catch (Exception ex)
         {

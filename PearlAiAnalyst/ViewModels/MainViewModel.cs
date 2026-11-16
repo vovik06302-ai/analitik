@@ -412,8 +412,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             Forecast.SetScreenshotPreview(screenshotPath);
 
             AnalysisStepText = "Сбор новостей из RSS и поисковых запросов...";
-            var news = await _newsService.FetchNewsAsync(settings.RssFeeds, settings.NewsKeywords, ct);
-            News.UpdateFromItems(news);
+            List<NewsItem> news = [];
+            try
+            {
+                var newsResult = await _newsService.FetchNewsWithDiagnosticsAsync(settings.RssFeeds, settings.NewsKeywords, ct);
+                news = newsResult.Items;
+                News.UpdateFromItems(news);
+                News.ErrorMessage = news.Count == 0 && newsResult.Errors.Count > 0
+                    ? $"Не удалось загрузить новости: {string.Join(" ", newsResult.Errors)}"
+                    : string.Empty;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception newsEx)
+            {
+                _logger.Warning($"Новости не загружены, анализ продолжится только по графику: {newsEx.Message}");
+                News.ErrorMessage = $"Не удалось загрузить новости: {newsEx.Message}";
+            }
 
             ForecastResult result;
             if (settings.Provider == AiProviderType.Claude)
@@ -451,7 +468,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _lastNotifiedDirection = result.Direction;
             InfoBannerText = $"Анализ завершён за {result.ResponseTimeMs / 1000.0:F1} с ({result.ModelName}).";
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (_analysisCts?.IsCancellationRequested == true)
         {
             InfoBannerText = "Анализ отменён.";
         }
