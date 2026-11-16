@@ -55,7 +55,7 @@ public sealed class UpdateService
                 };
             }
 
-            _logger.Info($"Проверка обновлений: repo={AppConstants.GitHubRepoUrl}, current={mgr.CurrentVersion}, channel={mgr.Channel}");
+            _logger.Info($"Проверка обновлений: repo={AppConstants.GitHubRepoUrl}, current={mgr.CurrentVersion}, channel=win");
             var updateInfo = await mgr.CheckForUpdatesAsync();
             if (updateInfo is null)
             {
