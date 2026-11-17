@@ -154,6 +154,7 @@ jobs:
             --packVersion "$ver" `
             --packDir "$env:PUBLISH_DIR" `
             --mainExe PearlAiAnalyst.exe `
+            --runtime win-x64 `
             --outputDir "$env:RELEASES_DIR" `
             --packTitle "Pearl AI Analyst" `
             --channel win
@@ -169,7 +170,7 @@ jobs:
             Copy-Item -Path $setup.FullName -Destination $friendlySetup -Force
           }
 
-          $fullPkg = Get-ChildItem -Path "$env:RELEASES_DIR" -Filter "PearlAiAnalyst-$ver-*-full.nupkg" | Select-Object -First 1
+          $fullPkg = Get-ChildItem -Path "$env:RELEASES_DIR" -Filter "PearlAiAnalyst-$ver-full.nupkg" | Select-Object -First 1
           if (-not $fullPkg) {
             throw "vpk pack did not produce full update package for version $ver"
           }
