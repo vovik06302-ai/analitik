@@ -189,15 +189,33 @@ ipcMain.handle('install-update', async (_event, url) => {
   }
 });
 
-// Обычный снимок экрана: окно программы сворачивается, снимается выбранный экран, окно возвращается.
-ipcMain.handle('capture-screen', async () => {
+// Обычный снимок экрана. Обычный режим: окно сворачивается, снимается выбранный экран.
+// Тихий режим (silent) для авто-анализа: окно на долю секунды становится прозрачным.
+ipcMain.handle('capture-screen', async (_event, options) => {
+  const silent = Boolean(options && options.silent);
+  let hidden = false;
+  const showWindow = () => {
+    if (!mainWindow || !hidden) return;
+    hidden = false;
+    if (silent) {
+      mainWindow.setOpacity(1);
+    } else {
+      mainWindow.restore();
+      mainWindow.focus();
+    }
+  };
+
   try {
     const displays = screen.getAllDisplays();
     let display = mainWindow
       ? screen.getDisplayMatching(mainWindow.getBounds())
       : screen.getPrimaryDisplay();
 
-    if (displays.length > 1) {
+    if (silent) {
+      const wanted = displays.find((d) => String(d.id) === String(options.displayId));
+      if (!wanted) return { ok: false, error: 'Экран для авто-снимка не найден.' };
+      display = wanted;
+    } else if (displays.length > 1) {
       const labels = displays.map(
         (d, i) =>
           `Экран ${i + 1}: ${d.size.width}×${d.size.height}${d.id === display.id ? ' (где окно программы)' : ''}`
@@ -215,8 +233,12 @@ ipcMain.handle('capture-screen', async () => {
       display = displays[response];
     }
 
-    if (mainWindow) mainWindow.minimize();
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    if (mainWindow) {
+      hidden = true;
+      if (silent) mainWindow.setOpacity(0);
+      else mainWindow.minimize();
+    }
+    await new Promise((resolve) => setTimeout(resolve, silent ? 250 : 800));
 
     const size = {
       width: Math.round(display.size.width * display.scaleFactor),
@@ -224,17 +246,14 @@ ipcMain.handle('capture-screen', async () => {
     };
     const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
     const source = sources.find((s) => s.display_id === String(display.id)) || sources[0];
+    showWindow();
 
-    if (mainWindow) {
-      mainWindow.restore();
-      mainWindow.focus();
-    }
     if (!source || source.thumbnail.isEmpty()) {
       return { ok: false, error: 'Не удалось сделать снимок экрана.' };
     }
-    return { ok: true, dataUrl: source.thumbnail.toDataURL() };
+    return { ok: true, dataUrl: source.thumbnail.toDataURL(), displayId: String(display.id) };
   } catch (err) {
-    if (mainWindow) mainWindow.restore();
+    showWindow();
     return { ok: false, error: `Не удалось сделать снимок экрана: ${err && err.message ? err.message : err}` };
   }
 });

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Monitor, Radio, Upload, X } from 'lucide-react';
-import { CaptureRegion } from '../types';
+import { CaptureRegion, DESKTOP_CAPTURE_DISPLAY_KEY, DESKTOP_CAPTURE_SOURCE_KEY } from '../types';
 import { Language, t } from '../i18n/translations';
 
 interface RegionSelectionModalProps {
@@ -18,6 +18,7 @@ interface RegionSelectionModalProps {
 interface DesktopCaptureResult {
   ok: boolean;
   dataUrl?: string;
+  displayId?: string;
   cancelled?: boolean;
   error?: string;
 }
@@ -29,6 +30,20 @@ const getDesktopCapture = (): (() => Promise<DesktopCaptureResult>) | null => {
     }
   ).pearlDesktop;
   return api?.captureScreen ? api.captureScreen : null;
+};
+
+const rememberDesktopSource = (displayId: string | null): void => {
+  try {
+    if (displayId) {
+      localStorage.setItem(DESKTOP_CAPTURE_SOURCE_KEY, 'still');
+      localStorage.setItem(DESKTOP_CAPTURE_DISPLAY_KEY, displayId);
+    } else {
+      localStorage.removeItem(DESKTOP_CAPTURE_SOURCE_KEY);
+      localStorage.removeItem(DESKTOP_CAPTURE_DISPLAY_KEY);
+    }
+  } catch {
+    // localStorage недоступен
+  }
 };
 
 interface DragBox {
@@ -50,6 +65,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [captureError, setCaptureError] = useState('');
   const [captureNote, setCaptureNote] = useState('');
+  const [stillDisplayId, setStillDisplayId] = useState<string | null>(null);
   const [keepLiveStream, setKeepLiveStream] = useState(true);
   const [capturedStream, setCapturedStream] = useState<MediaStream | null>(null);
 
@@ -62,6 +78,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
       setDragBox(null);
       setCaptureError('');
       setCaptureNote('');
+      setStillDisplayId(null);
       setCapturedStream(null);
     }
   }, [isOpen, initialImageUrl]);
@@ -92,6 +109,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
 
   const loadFile = (file: File) => {
     stopPendingStream();
+    setStillDisplayId(null);
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') {
@@ -113,6 +131,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
       setDragBox(null);
       setCaptureError('');
       setCaptureNote(note);
+      setStillDisplayId(result.displayId ?? null);
       return true;
     }
     if (!result.cancelled && result.error) {
@@ -161,6 +180,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
 
       setSourceUrl(canvas.toDataURL('image/png'));
       setDragBox(null);
+      setStillDisplayId(null);
       setCaptureNote(stillNote);
 
       if (keepLiveStream) {
@@ -230,6 +250,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
     const dispW = img.clientWidth;
     const dispH = img.clientHeight;
     if (!natW || !natH || !dispW || !dispH) return;
+    rememberDesktopSource(stillDisplayId);
 
     if (useFullImage || !normalizedBox || normalizedBox.width < 12 || normalizedBox.height < 12) {
       const liveMeta =

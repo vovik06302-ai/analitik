@@ -28,6 +28,11 @@ export interface CaptureRegion {
   height: number;
 }
 
+// Запоминаем, что область графика выбрана на обычном снимке экрана настольной программы:
+// тогда при авто-анализе программа сама снимает тот же экран и вырезает ту же область.
+export const DESKTOP_CAPTURE_SOURCE_KEY = 'pearl_desktop_capture_source';
+export const DESKTOP_CAPTURE_DISPLAY_KEY = 'pearl_desktop_capture_display';
+
 export interface NewsItem {
   title: string;
   link: string;

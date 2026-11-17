@@ -5,6 +5,8 @@ import {
   AppSettings,
   CaptureRegion,
   DEFAULT_CLAUDE_MODELS,
+  DESKTOP_CAPTURE_DISPLAY_KEY,
+  DESKTOP_CAPTURE_SOURCE_KEY,
   DEFAULT_GEMINI_MODELS,
   DEFAULT_SETTINGS,
   ForecastDirection,
@@ -72,6 +74,26 @@ function loadSavedSettings(): AppSettings {
     return DEFAULT_SETTINGS;
   } catch {
     return DEFAULT_SETTINGS;
+  }
+}
+
+interface DesktopCaptureApi {
+  captureScreen?: (options?: {
+    silent?: boolean;
+    displayId?: string;
+  }) => Promise<{ ok: boolean; dataUrl?: string }>;
+}
+
+function getDesktopCaptureApi(): DesktopCaptureApi | undefined {
+  return (window as unknown as { pearlDesktop?: DesktopCaptureApi }).pearlDesktop;
+}
+
+function forgetDesktopCapture(): void {
+  try {
+    localStorage.removeItem(DESKTOP_CAPTURE_SOURCE_KEY);
+    localStorage.removeItem(DESKTOP_CAPTURE_DISPLAY_KEY);
+  } catch {
+    // localStorage недоступен
   }
 }
 
@@ -392,6 +414,7 @@ export default function App() {
               const img = new Image();
               img.onload = () => {
                 stopLiveStream();
+                forgetDesktopCapture();
                 const region: CaptureRegion = {
                   x: 0,
                   y: 0,
@@ -423,6 +446,7 @@ export default function App() {
   const handleImageFileDropped = useCallback(
     (file: File) => {
       stopLiveStream();
+      forgetDesktopCapture();
       const reader = new FileReader();
       reader.onload = () => {
         if (typeof reader.result !== 'string') return;
@@ -451,13 +475,58 @@ export default function App() {
     [persistSettings, stopLiveStream]
   );
 
+  // Авто-снимок без живого потока: снимаем тот же экран и вырезаем сохранённую область.
+  const captureDesktopRegion = useCallback(async (): Promise<string | null> => {
+    const api = getDesktopCaptureApi();
+    if (!api?.captureScreen) return null;
+    let displayId: string | null = null;
+    try {
+      if (localStorage.getItem(DESKTOP_CAPTURE_SOURCE_KEY) !== 'still') return null;
+      displayId = localStorage.getItem(DESKTOP_CAPTURE_DISPLAY_KEY);
+    } catch {
+      return null;
+    }
+    const region = settingsRef.current.captureRegion;
+    if (!displayId || !region || region.width <= 0 || region.height <= 0) return null;
+
+    try {
+      const result = await api.captureScreen({ silent: true, displayId });
+      if (!result.ok || !result.dataUrl) return null;
+      const shot = result.dataUrl;
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('image load failed'));
+        img.src = shot;
+      });
+      const x = Math.max(0, Math.min(region.x, img.naturalWidth - 1));
+      const y = Math.max(0, Math.min(region.y, img.naturalHeight - 1));
+      const w = Math.max(1, Math.min(region.width, img.naturalWidth - x));
+      const h = Math.max(1, Math.min(region.height, img.naturalHeight - y));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.drawImage(img, x, y, w, h, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/png');
+      setScreenshotDataUrl(dataUrl);
+      setScreenshotCapturedAt(new Date().toISOString());
+      screenshotRef.current = dataUrl;
+      return dataUrl;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const runAnalysis = useCallback(async () => {
     if (isAnalyzingRef.current) return;
     const activeSettings = settingsRef.current;
 
     // Refresh screenshot from live stream if active
     const liveCaptured = liveStreamActive ? captureFromLiveStream() : null;
-    const currentImage = liveCaptured ?? screenshotRef.current ?? '';
+    const desktopCaptured = liveCaptured ? null : await captureDesktopRegion();
+    const currentImage = liveCaptured ?? desktopCaptured ?? screenshotRef.current ?? '';
 
     setIsAnalyzing(true);
     setErrorBannerText('');
@@ -593,6 +662,7 @@ export default function App() {
       }
     }
   }, [
+    captureDesktopRegion,
     captureFromLiveStream,
     fetchServerHistory,
     liveStreamActive,
