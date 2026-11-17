@@ -682,11 +682,36 @@ export default function App() {
       const data = (await res.json()) as {
         status: string;
         message: string;
+        latestVersion?: string;
+        downloadUrl?: string;
       };
       if (data.status === 'update_available' || data.status === 'up_to_date') {
         setInfoBannerText(data.message);
       } else {
         setErrorBannerText(data.message);
+      }
+
+      const desktop = (
+        window as unknown as {
+          pearlDesktop?: {
+            installUpdate: (url: string) => Promise<{ ok: boolean; error?: string }>;
+          };
+        }
+      ).pearlDesktop;
+      if (data.status === 'update_available' && data.downloadUrl && desktop) {
+        const agree = window.confirm(
+          `${data.message}\n\nСкачать и установить сейчас? Программа закроется и запустится установщик.`
+        );
+        if (agree) {
+          setInfoBannerText('Скачиваю обновление…');
+          const result = await desktop.installUpdate(data.downloadUrl);
+          if (!result.ok) {
+            const failMsg = result.error ?? 'Не удалось установить обновление.';
+            setErrorBannerText(failMsg);
+            return failMsg;
+          }
+          return 'Обновление загружено, запускается установщик…';
+        }
       }
       return data.message;
     } catch {

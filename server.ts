@@ -1169,12 +1169,27 @@ async function startServer() {
 
   // 10. GitHub release check
   app.get('/api/updates', async (_req, res) => {
+    const parseVersion = (v: string): number[] =>
+      v
+        .replace(/^v/i, '')
+        .split('.')
+        .map((part) => parseInt(part, 10) || 0);
+    const isNewer = (latest: string, current: string): boolean => {
+      const l = parseVersion(latest);
+      const c = parseVersion(current);
+      for (let i = 0; i < Math.max(l.length, c.length); i++) {
+        const diff = (l[i] ?? 0) - (c[i] ?? 0);
+        if (diff !== 0) return diff > 0;
+      }
+      return false;
+    };
+
     try {
       const response = await fetch(
-        'https://api.github.com/repos/vovik06302-ai/pearl-rig-core/releases/latest',
+        'https://api.github.com/repos/vovik06302-ai/analitik/releases/latest',
         {
           headers: {
-            'User-Agent': 'PearlAiAnalyst/1.1',
+            'User-Agent': 'PearlAiAnalyst',
             Accept: 'application/vnd.github+json',
           },
         }
@@ -1182,9 +1197,9 @@ async function startServer() {
 
       if (!response.ok) {
         res.json({
-          status: 'up_to_date',
+          status: 'error',
           currentVersion: APP_VERSION,
-          message: `У вас установлена актуальная веб-версия v${APP_VERSION}.`,
+          message: `Не удалось проверить обновления: GitHub ответил ${response.status}.`,
         });
         return;
       }
@@ -1192,21 +1207,29 @@ async function startServer() {
       const data = (await response.json()) as {
         tag_name?: string;
         html_url?: string;
+        assets?: Array<{ name?: string; browser_download_url?: string }>;
       };
       const latestTag = (data.tag_name ?? '').replace(/^v/i, '');
-      if (latestTag && latestTag !== APP_VERSION) {
+
+      if (latestTag && isNewer(latestTag, APP_VERSION)) {
+        const installer = (data.assets ?? []).find((asset) =>
+          /setup.*\.exe$/i.test(asset.name ?? '')
+        );
         res.json({
           status: 'update_available',
           currentVersion: APP_VERSION,
           latestVersion: latestTag,
           releaseUrl: data.html_url ?? '',
-          message: `Доступна новая версия на GitHub: v${latestTag}`,
+          downloadUrl: installer?.browser_download_url ?? '',
+          message: installer
+            ? `Доступна новая версия v${latestTag} (у вас v${APP_VERSION}).`
+            : `Вышла версия v${latestTag}, но установщик ещё загружается. Попробуйте через несколько минут.`,
         });
       } else {
         res.json({
           status: 'up_to_date',
           currentVersion: APP_VERSION,
-          message: 'У вас последняя версия',
+          message: `У вас последняя версия v${APP_VERSION}.`,
         });
       }
     } catch {

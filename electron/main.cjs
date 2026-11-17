@@ -1,6 +1,16 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, shell, dialog } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  shell,
+  dialog,
+  session,
+  desktopCapturer,
+  ipcMain,
+  net: electronNet,
+} = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -8,6 +18,8 @@ const net = require('net');
 const http = require('http');
 const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 
 const SMOKE = process.argv.includes('--smoke-test');
 const RELEASES_URL = 'https://github.com/vovik06302-ai/analitik/releases';
@@ -142,6 +154,85 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+let updating = false;
+
+// Скачивает установщик новой версии с GitHub и запускает его.
+ipcMain.handle('install-update', async (_event, url) => {
+  const allowed = 'https://github.com/vovik06302-ai/analitik/releases/download/';
+  if (typeof url !== 'string' || !url.startsWith(allowed) || !url.toLowerCase().endsWith('.exe')) {
+    return { ok: false, error: 'Недопустимый адрес обновления.' };
+  }
+  if (updating) return { ok: false, error: 'Обновление уже загружается.' };
+  updating = true;
+  try {
+    const target = path.join(app.getPath('temp'), path.basename(new URL(url).pathname));
+    const res = await electronNet.fetch(url);
+    if (!res.ok || !res.body) throw new Error(`Ошибка загрузки: HTTP ${res.status}`);
+    const total = Number(res.headers.get('content-length')) || 0;
+    let received = 0;
+    const stream = Readable.fromWeb(res.body);
+    stream.on('data', (chunk) => {
+      received += chunk.length;
+      if (total && mainWindow) mainWindow.setProgressBar(Math.min(received / total, 1));
+    });
+    await pipeline(stream, fs.createWriteStream(target));
+    if (mainWindow) mainWindow.setProgressBar(-1);
+    const openError = await shell.openPath(target);
+    if (openError) throw new Error(openError);
+    setTimeout(() => app.quit(), 1000);
+    return { ok: true };
+  } catch (err) {
+    if (mainWindow) mainWindow.setProgressBar(-1);
+    updating = false;
+    return { ok: false, error: `Не удалось скачать обновление: ${err && err.message ? err.message : err}` };
+  }
+});
+
+function setupScreenCapture() {
+  // Без этого getDisplayMedia() в Electron выдаёт "Not supported".
+  session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 0, height: 0 },
+      });
+      const ownId = mainWindow ? mainWindow.getMediaSourceId() : '';
+      const screens = sources.filter((s) => s.id.startsWith('screen:'));
+      const windows = sources
+        .filter((s) => s.id.startsWith('window:') && s.id !== ownId && s.name && s.name.trim())
+        .slice(0, 15);
+      const options = [...screens, ...windows];
+      const labels = options.map((s, i) => {
+        const kind = s.id.startsWith('screen:') ? `Экран ${i + 1}` : 'Окно';
+        return `${kind}: ${s.name.trim().slice(0, 70)}`;
+      });
+      labels.push('Отмена');
+
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        title: 'Захват экрана',
+        message: 'Что захватить?',
+        detail: 'Выберите экран или окно, где открыт график PEARL/USDT.',
+        buttons: labels,
+        cancelId: labels.length - 1,
+        noLink: true,
+      });
+      if (response >= options.length) {
+        callback({});
+        return;
+      }
+      callback({ video: options[response] });
+    } catch (err) {
+      console.error('Screen capture error:', err);
+      try {
+        callback({});
+      } catch {
+        // уже отвечено
+      }
+    }
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -150,7 +241,12 @@ function createWindow() {
     minHeight: 700,
     title: 'Pearl AI Analyst',
     autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: path.join(__dirname, 'preload.cjs'),
+    },
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -209,6 +305,7 @@ if (!SMOKE && !app.requestSingleInstanceLock()) {
     buildMenu();
     try {
       const createdEnv = await startBackend();
+      setupScreenCapture();
       createWindow();
       if (createdEnv) {
         const { response } = await dialog.showMessageBox(mainWindow, {
