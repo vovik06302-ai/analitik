@@ -15,6 +15,22 @@ interface RegionSelectionModalProps {
   ) => void;
 }
 
+interface DesktopCaptureResult {
+  ok: boolean;
+  dataUrl?: string;
+  cancelled?: boolean;
+  error?: string;
+}
+
+const getDesktopCapture = (): (() => Promise<DesktopCaptureResult>) | null => {
+  const api = (
+    window as unknown as {
+      pearlDesktop?: { captureScreen?: () => Promise<DesktopCaptureResult> };
+    }
+  ).pearlDesktop;
+  return api?.captureScreen ? api.captureScreen : null;
+};
+
 interface DragBox {
   startX: number;
   startY: number;
@@ -33,6 +49,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
   const [dragBox, setDragBox] = useState<DragBox | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [captureError, setCaptureError] = useState('');
+  const [captureNote, setCaptureNote] = useState('');
   const [keepLiveStream, setKeepLiveStream] = useState(true);
   const [capturedStream, setCapturedStream] = useState<MediaStream | null>(null);
 
@@ -44,6 +61,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
       setSourceUrl(initialImageUrl);
       setDragBox(null);
       setCaptureError('');
+      setCaptureNote('');
       setCapturedStream(null);
     }
   }, [isOpen, initialImageUrl]);
@@ -85,11 +103,43 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
     reader.readAsDataURL(file);
   };
 
+  // Обычный снимок экрана средствами настольной программы (без живого потока).
+  const captureStill = async (note: string): Promise<boolean> => {
+    const capture = getDesktopCapture();
+    if (!capture) return false;
+    const result = await capture();
+    if (result.ok && result.dataUrl) {
+      setSourceUrl(result.dataUrl);
+      setDragBox(null);
+      setCaptureError('');
+      setCaptureNote(note);
+      return true;
+    }
+    if (!result.cancelled && result.error) {
+      setCaptureError(result.error);
+    }
+    // true, чтобы не пробовать другие способы после отмены или ошибки
+    return true;
+  };
+
   const handleScreenCapture = async () => {
     setCaptureError('');
+    setCaptureNote('');
     stopPendingStream();
+
+    const stillNote =
+      lang === 'en'
+        ? 'Screenshot taken. Drag with the left mouse button over the chart area, then press "Apply Region".'
+        : 'Снимок экрана готов. Зажмите левую кнопку мыши и обведите область графика, затем нажмите «Применить область».';
+
+    if (!keepLiveStream && getDesktopCapture()) {
+      await captureStill(stillNote);
+      return;
+    }
+
     try {
       if (!navigator.mediaDevices?.getDisplayMedia) {
+        if (await captureStill(stillNote)) return;
         setCaptureError(
           lang === 'en'
             ? 'Screen capture is unavailable in this browser context. Upload or paste an image instead.'
@@ -111,6 +161,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
 
       setSourceUrl(canvas.toDataURL('image/png'));
       setDragBox(null);
+      setCaptureNote(stillNote);
 
       if (keepLiveStream) {
         setCapturedStream(stream);
@@ -118,6 +169,14 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
         stream.getTracks().forEach((track) => track.stop());
       }
     } catch (err) {
+      const cancelled = err instanceof DOMException && err.name === 'NotAllowedError';
+      if (!cancelled && getDesktopCapture()) {
+        const fallbackNote =
+          lang === 'en'
+            ? 'Live stream is unavailable, so a regular screenshot was taken. Drag over the chart area, then press "Apply Region".'
+            : 'Живой поток недоступен, поэтому сделан обычный снимок экрана. Обведите мышью область графика и нажмите «Применить область».';
+        if (await captureStill(fallbackNote)) return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       setCaptureError(
         lang === 'en'
@@ -136,13 +195,14 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
       }
     : null;
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleMouseDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!imgRef.current) return;
     if (e.button === 2) {
       stopPendingStream();
       onClose();
       return;
     }
+    e.currentTarget.setPointerCapture(e.pointerId);
     const rect = imgRef.current.getBoundingClientRect();
     const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
     const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
@@ -150,7 +210,7 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
     setDragBox({ startX: x, startY: y, endX: x, endY: y });
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleMouseMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!isDragging || !imgRef.current || !dragBox) return;
     const rect = imgRef.current.getBoundingClientRect();
     const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
@@ -312,6 +372,20 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
           </div>
         )}
 
+        {captureNote && !captureError && (
+          <div className="mx-4 mt-3 bg-[#38BDF8]/10 border border-[#38BDF8]/30 rounded-[8px] px-3 py-2 text-[#BAE6FD] text-[12.5px]">
+            {captureNote}
+          </div>
+        )}
+
+        {sourceUrl && !captureNote && !captureError && !dragBox && (
+          <div className="mx-4 mt-3 text-[12.5px] text-[#94A3B8]">
+            {lang === 'en'
+              ? 'Drag with the left mouse button over the chart area, then press "Apply Region".'
+              : 'Зажмите левую кнопку мыши и обведите область графика, затем нажмите «Применить область».'}
+          </div>
+        )}
+
         {/* Workspace / Crop Canvas */}
         <div
           onDragOver={(e) => e.preventDefault()}
@@ -324,10 +398,11 @@ export const RegionSelectionModal: React.FC<RegionSelectionModalProps> = ({
         >
           {sourceUrl ? (
             <div
-              className="relative inline-block select-none cursor-crosshair"
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
+              className="relative inline-block select-none cursor-crosshair touch-none"
+              onPointerDown={handleMouseDown}
+              onPointerMove={handleMouseMove}
+              onPointerUp={handleMouseUp}
+              onPointerCancel={handleMouseUp}
             >
               <img
                 ref={imgRef}

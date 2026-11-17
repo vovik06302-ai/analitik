@@ -9,6 +9,7 @@ const {
   session,
   desktopCapturer,
   ipcMain,
+  screen,
   net: electronNet,
 } = require('electron');
 const path = require('path');
@@ -185,6 +186,56 @@ ipcMain.handle('install-update', async (_event, url) => {
     if (mainWindow) mainWindow.setProgressBar(-1);
     updating = false;
     return { ok: false, error: `Не удалось скачать обновление: ${err && err.message ? err.message : err}` };
+  }
+});
+
+// Обычный снимок экрана: окно программы сворачивается, снимается выбранный экран, окно возвращается.
+ipcMain.handle('capture-screen', async () => {
+  try {
+    const displays = screen.getAllDisplays();
+    let display = mainWindow
+      ? screen.getDisplayMatching(mainWindow.getBounds())
+      : screen.getPrimaryDisplay();
+
+    if (displays.length > 1) {
+      const labels = displays.map(
+        (d, i) =>
+          `Экран ${i + 1}: ${d.size.width}×${d.size.height}${d.id === display.id ? ' (где окно программы)' : ''}`
+      );
+      labels.push('Отмена');
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        title: 'Снимок экрана',
+        message: 'Какой экран снять?',
+        buttons: labels,
+        cancelId: labels.length - 1,
+        noLink: true,
+      });
+      if (response >= displays.length) return { ok: false, cancelled: true };
+      display = displays[response];
+    }
+
+    if (mainWindow) mainWindow.minimize();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    const size = {
+      width: Math.round(display.size.width * display.scaleFactor),
+      height: Math.round(display.size.height * display.scaleFactor),
+    };
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
+    const source = sources.find((s) => s.display_id === String(display.id)) || sources[0];
+
+    if (mainWindow) {
+      mainWindow.restore();
+      mainWindow.focus();
+    }
+    if (!source || source.thumbnail.isEmpty()) {
+      return { ok: false, error: 'Не удалось сделать снимок экрана.' };
+    }
+    return { ok: true, dataUrl: source.thumbnail.toDataURL() };
+  } catch (err) {
+    if (mainWindow) mainWindow.restore();
+    return { ok: false, error: `Не удалось сделать снимок экрана: ${err && err.message ? err.message : err}` };
   }
 });
 
