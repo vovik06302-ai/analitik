@@ -1,4 +1,4 @@
-name: Build CI (Windows .NET 10)
+name: Build CI (Node.js 22 + Vite + Express)
 
 on:
   push:
@@ -14,38 +14,36 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v5
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
         with:
-          dotnet-version: '10.0.x'
+          node-version: '22'
+          cache: 'npm'
 
-      - name: Restore dependencies
-        shell: pwsh
-        run: dotnet restore PearlAiAnalyst.sln
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Build Release
-        shell: pwsh
-        run: dotnet build PearlAiAnalyst.sln -c Release --no-restore
+      - name: TypeScript Lint Check
+        run: npm run lint
 
-      - name: Publish win-x64 check
-        shell: pwsh
-        run: |
-          dotnet publish PearlAiAnalyst/PearlAiAnalyst.csproj `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            -p:GitHubRepoUrl="https://github.com/${{ github.repository }}" `
-            -o ./publish
+      - name: Run Unit Tests
+        run: npx --yes tsx --test server/*.test.ts src/utils/*.test.ts
+
+      - name: Build Production Bundle
+        run: npm run build
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
-          name: PearlAiAnalyst-win-x64
-          path: ./publish
+          name: PearlAiAnalyst-web-dist
+          path: |
+            dist/
+            server.js
+            package.json
           retention-days: 7

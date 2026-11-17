@@ -1,4 +1,4 @@
-name: Build and Release Windows Installer
+name: Build and Release Pearl AI Analyst
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Версия релиза (например, 1.0.11; если пусто — берётся из .csproj)'
+        description: 'Версия релиза (например, 1.1.0; если пусто — берётся из package.json)'
         required: false
         default: ''
 
@@ -21,254 +21,85 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  DOTNET_CLI_TELEMETRY_OPTOUT: 1
-  DOTNET_NOLOGO: 1
-  PROJECT_PATH: ${{ github.workspace }}\PearlAiAnalyst\PearlAiAnalyst.csproj
-  SOLUTION_PATH: ${{ github.workspace }}\PearlAiAnalyst.sln
-  PUBLISH_DIR: ${{ github.workspace }}\publish\win-x64
-  RELEASES_DIR: ${{ github.workspace }}\Releases
-
 jobs:
   release:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v5
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
         with:
-          dotnet-version: '10.0.x'
-
-      - name: Verify .NET 10 environment
-        shell: pwsh
-        run: |
-          dotnet --info
-          $sdks = dotnet --list-sdks
-          if (-not ($sdks -match '^10\.')) {
-            throw "Expected .NET 10 SDK to be installed, found:`n$sdks"
-          }
+          node-version: '22'
+          cache: 'npm'
 
       - name: Resolve version and tag
         id: version
-        shell: pwsh
         run: |
-          $inputVer = "${{ inputs.version }}".Trim().TrimStart('v', 'V')
-          if ("${{ github.event_name }}" -eq "release") {
-            $tag = "${{ github.event.release.tag_name }}"
-            $ver = $tag.TrimStart('v', 'V')
-          } elseif ("${{ github.ref_type }}" -eq "tag") {
-            $tag = "${{ github.ref_name }}"
-            $ver = $tag.TrimStart('v', 'V')
-          } elseif (-not [string]::IsNullOrWhiteSpace($inputVer)) {
-            $ver = $inputVer
-            $tag = "v$ver"
-          } else {
-            [xml]$csproj = Get-Content $env:PROJECT_PATH
-            $ver = ($csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1).ToString().Trim()
-            if ([string]::IsNullOrWhiteSpace($ver)) { $ver = "1.0.11" }
-            $tag = "v$ver"
-          }
+          INPUT_VER="${{ inputs.version }}"
+          INPUT_VER="${INPUT_VER#v}"
+          INPUT_VER="${INPUT_VER#V}"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            VER="${TAG#v}"
+            VER="${VER#V}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+            VER="${TAG#v}"
+            VER="${VER#V}"
+          elif [ -n "$INPUT_VER" ]; then
+            VER="$INPUT_VER"
+            TAG="v$VER"
+          else
+            VER="$(node -p "require('./package.json').version")"
+            TAG="v$VER"
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          $numericVer = ($ver -split '-')[0]
-          $parts = $numericVer.Split('.')
-          while ($parts.Count -lt 3) { $parts += '0' }
-          $assemblyVer = "$($parts[0]).$($parts[1]).$($parts[2]).0"
+      - name: Install dependencies
+        run: npm ci
 
-          echo "version=$ver" >> $env:GITHUB_OUTPUT
-          echo "tag=$tag" >> $env:GITHUB_OUTPUT
-          echo "assembly_version=$assemblyVer" >> $env:GITHUB_OUTPUT
-          Write-Host "Resolved version=$ver, tag=$tag, assembly_version=$assemblyVer"
+      - name: TypeScript Lint Check
+        run: npm run lint
 
-      - name: Restore dependencies
-        shell: pwsh
+      - name: Run Unit Tests
+        run: npx --yes tsx --test server/*.test.ts src/utils/*.test.ts
+
+      - name: Build Production Bundle
+        run: npm run build
+
+      - name: Package Release Archive
         run: |
-          dotnet restore "$env:SOLUTION_PATH" -r win-x64
-          if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed with exit code $LASTEXITCODE" }
+          mkdir -p release-staging Releases
+          cp -r dist release-staging/dist
+          cp server.js package.json package-lock.json .env.example README.md release-staging/
+          tar -czf "Releases/PearlAiAnalyst-v${{ steps.version.outputs.version }}-web.tar.gz" -C release-staging .
+          (cd release-staging && zip -r "../Releases/PearlAiAnalyst-v${{ steps.version.outputs.version }}-web.zip" .)
 
-      - name: Publish self-contained win-x64
-        shell: pwsh
-        run: |
-          if (Test-Path "$env:PUBLISH_DIR") { Remove-Item "$env:PUBLISH_DIR" -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path "$env:PUBLISH_DIR" | Out-Null
-
-          dotnet publish "$env:PROJECT_PATH" `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            --no-restore `
-            -p:Version=${{ steps.version.outputs.version }} `
-            -p:AssemblyVersion=${{ steps.version.outputs.assembly_version }} `
-            -p:FileVersion=${{ steps.version.outputs.assembly_version }} `
-            -p:GitHubRepoUrl="https://github.com/${{ github.repository }}" `
-            -o "$env:PUBLISH_DIR"
-
-          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
-
-          $exePath = Join-Path "$env:PUBLISH_DIR" "PearlAiAnalyst.exe"
-          if (-not (Test-Path $exePath)) {
-            throw "Expected executable not found at $exePath"
-          }
-          Write-Host "Published win-x64 artifacts to $env:PUBLISH_DIR"
-
-      - name: Install Velopack CLI (vpk)
-        shell: pwsh
-        run: |
-          dotnet tool update -g vpk --version 1.2.161
-          if ($LASTEXITCODE -ne 0) { throw "Failed to install vpk CLI" }
-          $toolsDir = Join-Path $env:USERPROFILE ".dotnet\tools"
-          echo $toolsDir >> $env:GITHUB_PATH
-          $env:PATH = "$toolsDir;$env:PATH"
-          vpk -h
-          if ($LASTEXITCODE -ne 0) { throw "vpk CLI verification failed with exit code $LASTEXITCODE" }
-
-      - name: Download previous release assets for delta packages
-        shell: pwsh
-        run: |
-          if (Test-Path "$env:RELEASES_DIR") { Remove-Item "$env:RELEASES_DIR" -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path "$env:RELEASES_DIR" | Out-Null
-          try {
-            vpk download github `
-              --repoUrl "https://github.com/${{ github.repository }}" `
-              --token "${{ secrets.GITHUB_TOKEN }}" `
-              --channel win `
-              --outputDir "$env:RELEASES_DIR"
-          } catch {
-            Write-Host "No previous Velopack release found or delta download skipped: $_"
-          }
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Continuing without delta base packages (initial release or no prior channel assets)."
-            $global:LASTEXITCODE = 0
-          }
-
-      - name: Pack installer with Velopack
-        shell: pwsh
-        run: |
-          $ver = "${{ steps.version.outputs.version }}"
-          vpk pack `
-            --packId PearlAiAnalyst `
-            --packVersion "$ver" `
-            --packDir "$env:PUBLISH_DIR" `
-            --mainExe PearlAiAnalyst.exe `
-            --runtime win-x64 `
-            --outputDir "$env:RELEASES_DIR" `
-            --packTitle "Pearl AI Analyst" `
-            --channel win
-          if ($LASTEXITCODE -ne 0) { throw "vpk pack failed with exit code $LASTEXITCODE" }
-
-          $setup = Get-ChildItem -Path "$env:RELEASES_DIR" -Filter "*-Setup.exe" | Select-Object -First 1
-          if (-not $setup -or $setup.Length -le 0) {
-            throw "vpk pack did not produce a valid *-Setup.exe in $env:RELEASES_DIR"
-          }
-
-          $friendlySetup = Join-Path "$env:RELEASES_DIR" "PearlAiAnalyst-Setup.exe"
-          if ($setup.Name -ne "PearlAiAnalyst-Setup.exe") {
-            Copy-Item -Path $setup.FullName -Destination $friendlySetup -Force
-          }
-
-          $fullPkg = Get-ChildItem -Path "$env:RELEASES_DIR" -Filter "PearlAiAnalyst-$ver-full.nupkg" | Select-Object -First 1
-          if (-not $fullPkg) {
-            throw "vpk pack did not produce full update package for version $ver"
-          }
-
-          $winFeed = Join-Path "$env:RELEASES_DIR" "releases.win.json"
-          if (-not (Test-Path $winFeed)) {
-            throw "vpk pack did not produce releases.win.json in $env:RELEASES_DIR"
-          }
-
-          Get-ChildItem -Path "$env:RELEASES_DIR" | Format-Table Name, Length
-
-      - name: Upload GitHub Release via Velopack
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          vpk upload github `
-            --repoUrl "https://github.com/${{ github.repository }}" `
-            --token "${{ secrets.GITHUB_TOKEN }}" `
-            --outputDir "$env:RELEASES_DIR" `
-            --channel win `
-            --publish `
-            --merge `
-            --targetCommitish "${{ github.sha }}" `
-            --releaseName "Pearl AI Analyst v${{ steps.version.outputs.version }}" `
-            --tag "${{ steps.version.outputs.tag }}"
-
-      - name: Ensure all installer and update assets are published on GitHub Release
-        shell: pwsh
+      - name: Create or Update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "${{ steps.version.outputs.tag }}"
-          $ver = "${{ steps.version.outputs.version }}"
-          $repo = "${{ github.repository }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          VER="${{ steps.version.outputs.version }}"
+          REPO="${{ github.repository }}"
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --target "${{ github.sha }}" \
+              --title "Pearl AI Analyst v$VER" \
+              --notes "Pearl AI Analyst v$VER (Live PEARL/USDT Market, Multi-Model AI Council, News Radar, SQLite History Audit, Telegram/Webhook Alerts)."
+          fi
+          gh release upload "$TAG" Releases/* --clobber --repo "$REPO"
 
-          gh release view "$tag" --repo "$repo" *> $null
-          if ($LASTEXITCODE -ne 0) {
-            $global:LASTEXITCODE = 0
-            Write-Host "Creating GitHub release $tag..."
-            gh release create "$tag" `
-              --repo "$repo" `
-              --target "${{ github.sha }}" `
-              --title "Pearl AI Analyst v$ver" `
-              --notes "Pearl AI Analyst v$ver (Windows x64 installer and Velopack auto-update packages)."
-            if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
-          } else {
-            gh release edit "$tag" --repo "$repo" --draft=false --title "Pearl AI Analyst v$ver"
-            if ($LASTEXITCODE -ne 0) { throw "gh release edit failed with exit code $LASTEXITCODE" }
-          }
-
-          $filesToUpload = [System.Collections.Generic.List[string]]::new()
-          foreach ($pattern in @("*-Setup.exe", "PearlAiAnalyst-$ver-*.nupkg", "*-Portable.zip")) {
-            foreach ($item in @(Get-ChildItem -Path "$env:RELEASES_DIR" -Filter $pattern -ErrorAction SilentlyContinue)) {
-              if ($item -and (Test-Path $item.FullName)) {
-                $filesToUpload.Add($item.FullName)
-              }
-            }
-          }
-
-          foreach ($metaName in @("releases.win.json", "RELEASES", "assets.win.json")) {
-            $metaPath = Join-Path "$env:RELEASES_DIR" $metaName
-            if (Test-Path $metaPath) {
-              $filesToUpload.Add($metaPath)
-            }
-          }
-
-          $uniqueFiles = @($filesToUpload | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
-          if ($uniqueFiles.Count -eq 0) {
-            throw "No release files found to upload in $env:RELEASES_DIR"
-          }
-
-          Write-Host "Uploading/verifying release assets:"
-          $uniqueFiles | ForEach-Object { Write-Host " - $_" }
-
-          gh release upload "$tag" @uniqueFiles --clobber --repo "$repo"
-          if ($LASTEXITCODE -ne 0) { throw "gh release upload failed with exit code $LASTEXITCODE" }
-
-          $releaseJson = gh release view "$tag" --repo "$repo" --json isDraft,assets | ConvertFrom-Json
-          if ($releaseJson.isDraft) {
-            throw "Release $tag is still a draft after publishing."
-          }
-
-          $assetNames = @($releaseJson.assets | ForEach-Object { $_.name })
-          Write-Host "Published assets on ${tag}: $($assetNames -join ', ')"
-
-          if (-not ($assetNames -match '-Setup\.exe$')) {
-            throw "Verification failed: no *-Setup.exe asset attached to release $tag"
-          }
-          if (-not ($assetNames -contains "releases.win.json")) {
-            throw "Verification failed: releases.win.json is missing from release $tag"
-          }
-          if (-not ($assetNames -match '-full\.nupkg$')) {
-            throw "Verification failed: no *-full.nupkg update package attached to release $tag"
-          }
-
-      - name: Upload release artifacts to workflow run
-        uses: actions/upload-artifact@v6
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: PearlAiAnalyst-Release-${{ steps.version.outputs.version }}
-          path: ${{ github.workspace }}\Releases
+          path: Releases/
           retention-days: 14

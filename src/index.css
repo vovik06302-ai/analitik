@@ -1,1 +1,71 @@
 @import "tailwindcss";
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    background-color: #0A0E17;
+    color: #F1F5F9;
+    font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2D3B59;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3B4E73;
+  }
+}
+
+@keyframes pearl-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+@keyframes ring-pulse {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.55; }
+}
+
+@keyframes arrow-float {
+  0%, 100% { transform: translateY(-3px); }
+  50% { transform: translateY(3px); }
+}
+
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-pearl-pulse {
+  animation: pearl-pulse 1.4s ease-in-out infinite;
+}
+
+.animate-ring-pulse {
+  animation: ring-pulse 1.6s ease-in-out infinite;
+}
+
+.animate-arrow-float {
+  animation: arrow-float 1.4s ease-in-out infinite;
+}
+
+.animate-card-enter {
+  animation: card-enter 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
