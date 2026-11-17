@@ -26,7 +26,8 @@ import { forecastDb } from './server/database';
 import { dispatchExternalAlerts } from './server/alertService';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
 
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
@@ -1226,15 +1227,17 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = process.env.DIST_DIR
+      ? path.resolve(process.env.DIST_DIR)
+      : path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Pearl AI Analyst server running on http://0.0.0.0:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`Pearl AI Analyst server running on http://${HOST}:${PORT}`);
   });
 }
 

@@ -19,3 +19,5 @@ dist/
 coverage/
 server.js
 .playwright-cli/
+build-electron/
+installer/

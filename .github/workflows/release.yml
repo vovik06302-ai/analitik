@@ -24,6 +24,9 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
 
     steps:
       - name: Checkout repository
@@ -59,6 +62,9 @@ jobs:
           fi
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Sync APP_VERSION with release version
+        run: sed -i "s/APP_VERSION = '[^']*'/APP_VERSION = '${{ steps.version.outputs.version }}'/" src/types.ts
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -102,4 +108,59 @@ jobs:
         with:
           name: PearlAiAnalyst-Release-${{ steps.version.outputs.version }}
           path: Releases/
+          retention-days: 14
+
+  windows-installer:
+    needs: release
+    runs-on: windows-latest
+    env:
+      VER: ${{ needs.release.outputs.version }}
+      TAG: ${{ needs.release.outputs.tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Sync APP_VERSION with release version
+        shell: bash
+        run: sed -i "s/APP_VERSION = '[^']*'/APP_VERSION = '$VER'/" src/types.ts
+
+      - name: Install dependencies
+        shell: bash
+        run: npm install --no-audit --no-fund
+
+      - name: Build desktop bundle
+        shell: bash
+        run: npm run build:desktop
+
+      - name: Build Windows installer
+        shell: bash
+        run: npx electron-builder --win nsis --x64 --publish never -c.extraMetadata.version="$VER"
+
+      - name: Smoke test packaged app
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem installer\win-unpacked -Filter *.exe | Where-Object { $_.Name -notlike 'Uninstall*' } | Select-Object -First 1
+          Write-Host "Testing $($exe.FullName)"
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--smoke-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Smoke test failed, exit code $($p.ExitCode)" }
+
+      - name: Upload installer to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ls installer
+          gh release upload "$TAG" "installer/PearlAiAnalyst-Setup-$VER.exe" --clobber --repo "${{ github.repository }}"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PearlAiAnalyst-Setup-${{ needs.release.outputs.version }}
+          path: installer/PearlAiAnalyst-Setup-*.exe
           retention-days: 14

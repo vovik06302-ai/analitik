@@ -1,7 +1,7 @@
 {
   "name": "pearl-ai-analyst",
   "private": true,
-  "version": "1.0.18",
+  "version": "1.0.19",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -9,7 +9,10 @@
     "start": "NODE_ENV=production node server.js",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "build:desktop": "vite build && node scripts/build-electron.mjs",
+    "desktop": "npm run build:desktop && electron .",
+    "dist:win": "npm run build:desktop && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@google/genai": "^3.4.0",
@@ -33,6 +36,48 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
-    "@types/express": "^4.17.21"
+    "@types/express": "^4.17.21",
+    "electron": "^37.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "description": "Pearl AI Analyst — настольное приложение",
+  "author": "vovik06302-ai",
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.pearl.aianalyst",
+    "productName": "Pearl AI Analyst",
+    "asar": false,
+    "directories": {
+      "output": "installer",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "dist/**",
+      "build-electron/**",
+      "build/icon.png",
+      "package.json",
+      "!node_modules"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "PearlAiAnalyst-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Pearl AI Analyst"
+    }
   }
 }
