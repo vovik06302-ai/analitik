@@ -64,6 +64,14 @@ export interface OhlcCandle {
   high: number;
   low: number;
   close: number;
+  volume?: number;
+}
+
+export interface OrderBookSummary {
+  bestBid: number | null;
+  bestAsk: number | null;
+  bidVolume: number;
+  askVolume: number;
 }
 
 export interface MarketSnapshot {
@@ -79,6 +87,9 @@ export interface MarketSnapshot {
   dexLiquidityUsd: number | null;
   tickers: ExchangeTicker[];
   ohlc: OhlcCandle[];
+  ohlcPeriodMinutes?: number;
+  hourlyOhlc?: OhlcCandle[];
+  orderBook?: OrderBookSummary;
   anomalies: string[];
   fetchedAtUtc: string;
 }
@@ -177,6 +188,7 @@ export interface AppSettings {
   captureRegion: CaptureRegion;
   autoIntervalMinutes: number;
   autoModeEnabled: boolean;
+  useExchangeData: boolean;
   provider: AiProviderType;
   consensusMode: boolean;
   geminiModel: string;
@@ -243,6 +255,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   captureRegion: { x: 0, y: 0, width: 0, height: 0 },
   autoIntervalMinutes: 15,
   autoModeEnabled: false,
+  useExchangeData: true,
   provider: AiProviderType.Gemini,
   consensusMode: false,
   geminiModel: DEFAULT_GEMINI_MODEL,

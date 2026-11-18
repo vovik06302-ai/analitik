@@ -183,6 +183,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
         </div>
 
+        <label className="flex items-center gap-2.5 text-[13px] text-[#F1F5F9] cursor-pointer mb-1">
+          <input
+            type="checkbox"
+            checked={draft.useExchangeData}
+            onChange={(e) => setDraft({ ...draft, useExchangeData: e.target.checked })}
+            className="w-4 h-4 accent-[#00D4AA] rounded cursor-pointer"
+          />
+          <span>
+            {lang === 'en'
+              ? 'Take data from the SafeTrade exchange (no screenshot needed)'
+              : 'Брать данные с биржи SafeTrade (скриншот не нужен)'}
+          </span>
+        </label>
+        <div className="text-[11.5px] text-[#94A3B8] mb-3 ml-[26px]">
+          {lang === 'en'
+            ? 'Candles, price, volume and order book come straight from the exchange API. Turn off to analyze a screenshot instead.'
+            : 'Свечи, цена, объём и стакан берутся напрямую с биржи. Выключите, чтобы анализировать скриншот графика.'}
+        </div>
+
         <label className="flex items-center gap-2.5 text-[13px] text-[#F1F5F9] cursor-pointer mb-3">
           <input
             type="checkbox"

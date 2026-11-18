@@ -10,6 +10,7 @@ import {
   Users,
 } from 'lucide-react';
 import { ForecastDirection, ForecastResult, MarketSnapshot } from '../types';
+import { CandleChart, ChartLevel } from './CandleChart';
 import { Language, t } from '../i18n/translations';
 import {
   formatCompactUsd,
@@ -30,6 +31,7 @@ interface ForecastViewProps {
   screenshotDataUrl: string | null;
   screenshotLabel: string;
   screenshotCapturedAt: string | null;
+  useExchangeData: boolean;
   autoModeEnabled: boolean;
   autoIntervalMinutes: number;
   nextAutoRunTimeText: string;
@@ -157,6 +159,7 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
   screenshotDataUrl,
   screenshotLabel,
   screenshotCapturedAt,
+  useExchangeData,
   autoModeEnabled,
   autoIntervalMinutes,
   nextAutoRunTimeText,
@@ -165,6 +168,26 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
 }) => {
   const noData = t(lang, 'NoData');
   const [showLevelsHud, setShowLevelsHud] = useState(true);
+
+  const chartLevels = useMemo<ChartLevel[]>(() => {
+    if (!forecast) return [];
+    const list: ChartLevel[] = [];
+    const supportLabel = lang === 'en' ? 'Support' : 'Поддержка';
+    const resistanceLabel = lang === 'en' ? 'Resistance' : 'Сопротивление';
+    const targetLabel = lang === 'en' ? 'Target' : 'Цель';
+    const stopLabel = lang === 'en' ? 'Stop' : 'Стоп';
+    forecast.support.slice(0, 2).forEach((v) => list.push({ label: supportLabel, value: v, color: '#38BDF8' }));
+    forecast.resistance
+      .slice(0, 2)
+      .forEach((v) => list.push({ label: resistanceLabel, value: v, color: '#F59E0B' }));
+    if (forecast.targetPrice !== null) {
+      list.push({ label: targetLabel, value: forecast.targetPrice, color: '#00D4AA' });
+    }
+    if (forecast.stopPrice !== null) {
+      list.push({ label: stopLabel, value: forecast.stopPrice, color: '#EF4444' });
+    }
+    return list;
+  }, [forecast, lang]);
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -656,6 +679,31 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
           </div>
         </div>
 
+        {useExchangeData ? (
+          <div className="w-full bg-[#0A0E17] border border-[#25324D] rounded-[10px] p-2.5">
+            {market && market.ohlc.length > 1 ? (
+              <>
+                <CandleChart
+                  candles={market.ohlc}
+                  levels={chartLevels}
+                  currentPrice={market.priceUsd}
+                  periodMinutes={market.ohlcPeriodMinutes ?? 30}
+                />
+                <div className="text-[11.5px] text-[#94A3B8] mt-1.5">
+                  {lang === 'en'
+                    ? `Data: ${market.primaryExchange} • candles ${market.ohlcPeriodMinutes ?? 30}m • updated ${formatLocalDateTime(market.fetchedAtUtc)}`
+                    : `Данные: ${market.primaryExchange} • свечи ${market.ohlcPeriodMinutes ?? 30} мин • обновлено ${formatLocalDateTime(market.fetchedAtUtc)}`}
+                </div>
+              </>
+            ) : (
+              <div className="py-10 text-center text-[#64748B] text-[13px]">
+                {lang === 'en'
+                  ? 'Waiting for exchange data...'
+                  : 'Ожидание данных с биржи...'}
+              </div>
+            )}
+          </div>
+        ) : (
         <button
           type="button"
           onClick={onOpenRegionModal}
@@ -703,6 +751,7 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
             </div>
           )}
         </button>
+        )}
       </div>
     </div>
   );

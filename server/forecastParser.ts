@@ -1,9 +1,32 @@
-import { ForecastDirection, ForecastResult, MarketSnapshot, NewsItem } from '../src/types';
+import {
+  ForecastDirection,
+  ForecastResult,
+  MarketSnapshot,
+  NewsItem,
+  OhlcCandle,
+} from '../src/types';
 
 export interface ForecastParseOutcome {
   success: boolean;
   result?: Omit<ForecastResult, 'modelName' | 'providerName' | 'responseTimeMs' | 'createdAtUtc'>;
   errorMessage?: string;
+}
+
+function formatCandles(candles: OhlcCandle[], count: number): string {
+  return candles
+    .slice(-count)
+    .map((c) => {
+      const vol = c.volume !== undefined ? ` V:${Math.round(c.volume)}` : '';
+      return `[${new Date(c.timestamp).toISOString().slice(5, 16).replace('T', ' ')} O:${c.open} H:${c.high} L:${c.low} C:${c.close}${vol}]`;
+    })
+    .join(' ');
+}
+
+function bidSharePercent(market: MarketSnapshot): number | null {
+  const book = market.orderBook;
+  if (!book) return null;
+  const total = book.bidVolume + book.askVolume;
+  return total > 0 ? (book.bidVolume / total) * 100 : null;
 }
 
 export function buildAnalysisPrompt(
@@ -51,11 +74,18 @@ export function buildAnalysisPrompt(
         lines.push(`- Detected Anomalies: ${market.anomalies.join('; ')}`);
       }
       if (market.ohlc.length > 0) {
-        const recent = market.ohlc.slice(-6).map(
-          (c) =>
-            `[${new Date(c.timestamp).toISOString().slice(11, 16)} O:${c.open} H:${c.high} L:${c.low} C:${c.close}]`
+        const period = market.ohlcPeriodMinutes ?? 30;
+        const count = market.ohlcPeriodMinutes ? 32 : 6;
+        lines.push(`- Recent ${period}m OHLC candles (UTC, oldest first): ${formatCandles(market.ohlc, count)}`);
+      }
+      if (market.hourlyOhlc && market.hourlyOhlc.length > 0) {
+        lines.push(`- Hourly OHLC candles (last 24h, UTC): ${formatCandles(market.hourlyOhlc, 24)}`);
+      }
+      if (market.orderBook) {
+        const share = bidSharePercent(market);
+        lines.push(
+          `- Order book (top 20 levels): bid volume ${Math.round(market.orderBook.bidVolume)}, ask volume ${Math.round(market.orderBook.askVolume)}${share !== null ? `, bids share ${share.toFixed(0)}%` : ''}`
         );
-        lines.push(`- Recent 30m OHLC candles: ${recent.join(' ')}`);
       }
     }
 
@@ -123,11 +153,18 @@ export function buildAnalysisPrompt(
         lines.push(`- Зафиксированные аномалии: ${market.anomalies.join('; ')}`);
       }
       if (market.ohlc.length > 0) {
-        const recent = market.ohlc.slice(-6).map(
-          (c) =>
-            `[${new Date(c.timestamp).toISOString().slice(11, 16)} O:${c.open} H:${c.high} L:${c.low} C:${c.close}]`
+        const period = market.ohlcPeriodMinutes ?? 30;
+        const count = market.ohlcPeriodMinutes ? 32 : 6;
+        lines.push(`- Последние ${period}м OHLC-свечи (UTC, от старых к новым): ${formatCandles(market.ohlc, count)}`);
+      }
+      if (market.hourlyOhlc && market.hourlyOhlc.length > 0) {
+        lines.push(`- Часовые OHLC-свечи (последние 24ч, UTC): ${formatCandles(market.hourlyOhlc, 24)}`);
+      }
+      if (market.orderBook) {
+        const share = bidSharePercent(market);
+        lines.push(
+          `- Стакан (20 лучших уровней): объём покупок ${Math.round(market.orderBook.bidVolume)}, объём продаж ${Math.round(market.orderBook.askVolume)}${share !== null ? `, доля покупок ${share.toFixed(0)}%` : ''}`
         );
-        lines.push(`- Последние 30м OHLC-свечи: ${recent.join(' ')}`);
       }
     }
 

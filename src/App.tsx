@@ -524,9 +524,12 @@ export default function App() {
     const activeSettings = settingsRef.current;
 
     // Refresh screenshot from live stream if active
-    const liveCaptured = liveStreamActive ? captureFromLiveStream() : null;
-    const desktopCaptured = liveCaptured ? null : await captureDesktopRegion();
-    const currentImage = liveCaptured ?? desktopCaptured ?? screenshotRef.current ?? '';
+    const useExchange = activeSettings.useExchangeData;
+    const liveCaptured = !useExchange && liveStreamActive ? captureFromLiveStream() : null;
+    const desktopCaptured = !useExchange && !liveCaptured ? await captureDesktopRegion() : null;
+    const currentImage = useExchange
+      ? ''
+      : liveCaptured ?? desktopCaptured ?? screenshotRef.current ?? '';
 
     setIsAnalyzing(true);
     setErrorBannerText('');
@@ -541,7 +544,7 @@ export default function App() {
 
       const [latestNewsRes, latestMarketRes] = await Promise.allSettled([
         refreshNews(activeSettings),
-        refreshMarket(false),
+        refreshMarket(useExchange),
       ]);
 
       const latestNews =
@@ -550,8 +553,22 @@ export default function App() {
         latestMarketRes.status === 'fulfilled' ? latestMarketRes.value : marketRef.current;
 
       if (!currentImage && !latestMarket) {
-        setErrorBannerText(t(activeSettings.language, 'ErrorSelectImageFirst'));
+        setErrorBannerText(
+          useExchange
+            ? activeSettings.language === 'en'
+              ? 'Could not load market data from the SafeTrade exchange.'
+              : 'Не удалось загрузить данные с биржи SafeTrade.'
+            : t(activeSettings.language, 'ErrorSelectImageFirst')
+        );
         return;
+      }
+
+      if (useExchange && latestMarket && latestMarket.primaryExchange !== 'SafeTrade') {
+        setInfoBannerText(
+          activeSettings.language === 'en'
+            ? 'SafeTrade did not respond, so backup data sources were used.'
+            : 'SafeTrade не ответил, поэтому использованы запасные источники данных.'
+        );
       }
 
       const activeModel =
@@ -670,6 +687,18 @@ export default function App() {
     refreshMarket,
     refreshNews,
   ]);
+
+  // Один клик: запускает анализ и включает авто-режим (повтор через заданный период).
+  const handleAnalyzeClick = () => {
+    if (!settingsRef.current.autoModeEnabled) {
+      persistSettings({ ...settingsRef.current, autoModeEnabled: true });
+    }
+    void runAnalysis();
+  };
+
+  const handleStopAuto = () => {
+    persistSettings({ ...settingsRef.current, autoModeEnabled: false });
+  };
 
   // Auto-mode timer setup
   useEffect(() => {
@@ -981,10 +1010,26 @@ export default function App() {
               </div>
             )}
 
+            {settings.autoModeEnabled && (
+              <button
+                type="button"
+                onClick={handleStopAuto}
+                className="bg-[#101624] hover:bg-[#1B263B] text-[#FCA5A5] border border-[#EF4444]/40 rounded-[10px] px-3 py-2 text-[12.5px] font-medium cursor-pointer transition-colors"
+              >
+                {lang === 'en' ? 'Stop auto' : 'Остановить авто'}
+                {autoCountdownText ? ` (${autoCountdownText})` : ''}
+              </button>
+            )}
+
             <button
               type="button"
               disabled={isAnalyzing}
-              onClick={() => void runAnalysis()}
+              title={
+                lang === 'en'
+                  ? 'Runs the analysis and keeps repeating it automatically'
+                  : 'Запускает анализ и дальше повторяет его сам'
+              }
+              onClick={handleAnalyzeClick}
               className="bg-[#00D4AA] hover:bg-[#22E7BF] active:scale-[0.97] text-[#071216] rounded-[10px] px-4 py-2 text-[13.5px] font-semibold min-w-[185px] cursor-pointer disabled:opacity-45 transition-all"
             >
               {isAnalyzing ? t(lang, 'BtnAnalyzing') : t(lang, 'BtnAnalyzeNow')}
@@ -1039,6 +1084,7 @@ export default function App() {
                   : ''
               }
               screenshotCapturedAt={screenshotCapturedAt}
+              useExchangeData={settings.useExchangeData}
               autoModeEnabled={settings.autoModeEnabled}
               autoIntervalMinutes={settings.autoIntervalMinutes}
               nextAutoRunTimeText={

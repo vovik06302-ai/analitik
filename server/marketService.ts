@@ -1,4 +1,5 @@
 import { ExchangeTicker, MarketSnapshot, OhlcCandle } from '../src/types';
+import { fetchSafeTradeData, fetchSafeTradePriceNearTime } from './safetradeService';
 
 let cachedSnapshot: MarketSnapshot | null = null;
 let cachedAtMs = 0;
@@ -10,7 +11,7 @@ export async function fetchPearlMarketSnapshot(force = false): Promise<MarketSna
     return cachedSnapshot;
   }
 
-  const [coinRes, ohlcRes, dexRes] = await Promise.allSettled([
+  const [coinRes, ohlcRes, dexRes, safeTradeRes] = await Promise.allSettled([
     fetch(
       'https://api.coingecko.com/api/v3/coins/pearl-2?localization=false&tickers=true&market_data=true&community_data=false&developer_data=false',
       { headers: { Accept: 'application/json' } }
@@ -22,7 +23,11 @@ export async function fetchPearlMarketSnapshot(force = false): Promise<MarketSna
       'https://api.dexscreener.com/latest/dex/pairs/ethereum/0x89a67c6DEE35DB9815dA2fb9191F0998A8B37C39',
       { headers: { Accept: 'application/json' } }
     ).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`DexScreener HTTP ${r.status}`)))),
+    fetchSafeTradeData(),
   ]);
+
+  // Данные напрямую с биржи SafeTrade — главный источник, остальные служат запасными.
+  const st = safeTradeRes.status === 'fulfilled' ? safeTradeRes.value : null;
 
   const coinData =
     coinRes.status === 'fulfilled' ? (coinRes.value as Record<string, any>) : null;
@@ -70,6 +75,7 @@ export async function fetchPearlMarketSnapshot(force = false): Promise<MarketSna
       : null;
 
   const priceUsd =
+    st?.lastPrice ??
     freshCoinPrice ??
     (dexPair?.priceUsd !== undefined ? Number(dexPair.priceUsd) : null) ??
     cachedSnapshot?.priceUsd ??
@@ -81,28 +87,36 @@ export async function fetchPearlMarketSnapshot(force = false): Promise<MarketSna
   }
 
   const priceChange24hPercent =
-    md?.price_change_percentage_24h !== undefined
+    st && st.changePercent !== null
+      ? st.changePercent
+      : md?.price_change_percentage_24h !== undefined
       ? Number(md.price_change_percentage_24h)
       : dexPair?.priceChange?.h24 !== undefined
       ? Number(dexPair.priceChange.h24)
       : cachedSnapshot?.priceChange24hPercent ?? null;
 
   const high24h =
-    md?.high_24h?.usd !== undefined
+    st && st.high24h !== null
+      ? st.high24h
+      : md?.high_24h?.usd !== undefined
       ? Number(md.high_24h.usd)
       : cachedSnapshot?.high24h ?? null;
   const low24h =
-    md?.low_24h?.usd !== undefined
+    st && st.low24h !== null
+      ? st.low24h
+      : md?.low_24h?.usd !== undefined
       ? Number(md.low_24h.usd)
       : cachedSnapshot?.low24h ?? null;
 
   const volume24hUsd =
+    st?.volumeQuote24h ??
     (coinData ? safeTradeTicker?.volumeUsd24h : undefined) ??
     (md?.total_volume?.usd !== undefined ? Number(md.total_volume.usd) : undefined) ??
     cachedSnapshot?.volume24hUsd ??
     (dexPair?.volume?.h24 !== undefined ? Number(dexPair.volume.h24) : null);
 
   const spreadPercent =
+    st?.spreadPercent ??
     (coinData ? safeTradeTicker?.spreadPercent : undefined) ??
     cachedSnapshot?.spreadPercent ??
     null;
@@ -129,7 +143,27 @@ export async function fetchPearlMarketSnapshot(force = false): Promise<MarketSna
         }))
     : [];
 
-  const ohlc = parsedOhlc.length > 0 ? parsedOhlc : cachedSnapshot?.ohlc ?? [];
+  const ohlc =
+    st && st.candles15m.length > 0
+      ? st.candles15m
+      : parsedOhlc.length > 0
+      ? parsedOhlc
+      : cachedSnapshot?.ohlc ?? [];
+  const usingSafeTradeCandles = Boolean(st && st.candles15m.length > 0);
+
+  if (st?.lastPrice) {
+    const safeTradeTickerEntry: ExchangeTicker = {
+      exchange: 'SafeTrade',
+      pair: 'PEARL/USDT',
+      lastPrice: st.lastPrice,
+      volumeUsd24h: st.volumeQuote24h ?? 0,
+      spreadPercent: st.spreadPercent ?? 0,
+    };
+    tickers = [
+      safeTradeTickerEntry,
+      ...tickers.filter((t) => !t.exchange.toLowerCase().includes('safetrade')),
+    ];
+  }
 
   const anomalies: string[] = [];
   if (priceChange24hPercent !== null && Math.abs(priceChange24hPercent) >= 8) {
@@ -155,9 +189,10 @@ export async function fetchPearlMarketSnapshot(force = false): Promise<MarketSna
 
   const snapshot: MarketSnapshot = {
     symbol: 'PEARL / USDT',
-    primaryExchange:
-      (coinData ? safeTradeTicker?.exchange : cachedSnapshot?.primaryExchange) ??
-      'DexScreener',
+    primaryExchange: st?.lastPrice
+      ? 'SafeTrade'
+      : (coinData ? safeTradeTicker?.exchange : cachedSnapshot?.primaryExchange) ??
+        'DexScreener',
     priceUsd,
     priceChange24hPercent,
     high24h,
@@ -168,6 +203,17 @@ export async function fetchPearlMarketSnapshot(force = false): Promise<MarketSna
     dexLiquidityUsd,
     tickers,
     ohlc,
+    ohlcPeriodMinutes: usingSafeTradeCandles ? 15 : 30,
+    hourlyOhlc: st && st.candles1h.length > 0 ? st.candles1h : undefined,
+    orderBook:
+      st && st.bidVolume !== null && st.askVolume !== null
+        ? {
+            bestBid: st.bestBid,
+            bestAsk: st.bestAsk,
+            bidVolume: st.bidVolume,
+            askVolume: st.askVolume,
+          }
+        : undefined,
     anomalies,
     fetchedAtUtc: new Date().toISOString(),
   };
@@ -178,6 +224,8 @@ export async function fetchPearlMarketSnapshot(force = false): Promise<MarketSna
 }
 
 export async function fetchPearlPriceNearTime(targetUtcMs: number): Promise<number | null> {
+  const fromExchange = await fetchSafeTradePriceNearTime(targetUtcMs);
+  if (fromExchange !== null) return fromExchange;
   try {
     const fromSec = Math.floor((targetUtcMs - 40 * 60 * 1000) / 1000);
     const toSec = Math.floor((targetUtcMs + 40 * 60 * 1000) / 1000);
