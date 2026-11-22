@@ -3,7 +3,7 @@ export type Language = 'ru' | 'en';
 export const TRANSLATIONS = {
   ru: {
     AppTitle: 'Pearl AI Analyst',
-    SubtitlePair: 'PEARL / USDT • SafeTrade',
+    SubtitlePair: 'PEARL / USDT • SafeTrade / Gate',
     NavForecast: 'Прогноз',
     NavNews: 'Новости',
     NavHistory: 'История',
@@ -11,6 +11,8 @@ export const TRANSLATIONS = {
 
     BtnAnalyzeNow: 'Анализировать сейчас',
     BtnAnalyzing: 'Анализ выполняется...',
+    BtnStartAuto: 'Запустить авто',
+    BtnStopAuto: 'Стоп авто',
     BtnSelectRegion: 'Выбрать область',
     BtnRefreshNews: 'Обновить новости',
     BtnRefreshHistory: 'Обновить',
@@ -42,7 +44,7 @@ export const TRANSLATIONS = {
     LabelNewsImpact: 'Влияние новостей',
     LabelNewsReasons: 'Новостные факторы',
     LabelRisks: 'Риски',
-    LabelLastScreenshot: 'Последний скриншот графика',
+    LabelLastScreenshot: 'График и уровни',
     LabelResponseTime: 'Время ответа ИИ',
     LabelModel: 'Модель',
     LabelAutoMode: 'Авто-режим',
@@ -50,6 +52,7 @@ export const TRANSLATIONS = {
     LabelRegion: 'Область экрана',
     LabelVersion: 'Версия программы',
     LabelUpdated: 'Обновлено',
+    ForecastHorizonLabel: 'Горизонт прогноза',
 
     Accuracy1h: 'Точность (1 час)',
     Accuracy2h: 'Точность (2 часа)',
@@ -62,7 +65,8 @@ export const TRANSLATIONS = {
 
     GeminiConnected: 'Gemini API: подключен',
     GeminiNotConfigured: 'Gemini API: ключ не задан',
-    GeminiTooltipConnected: 'Серверный ключ GEMINI_API_KEY зашифрован (AES-256-GCM) и готов к работе через @google/genai.',
+    GeminiTooltipConnected:
+      'Серверный ключ GEMINI_API_KEY зашифрован (AES-256-GCM) и готов к работе через @google/genai.',
     GeminiTooltipNotConfigured: 'Переменная окружения GEMINI_API_KEY не задана на сервере.',
 
     ConnectionStatusHeader: 'Подключения',
@@ -75,16 +79,17 @@ export const TRANSLATIONS = {
     ClaudeOffline: 'Claude API: нет связи',
 
     EmptyForecastTitle: 'Прогноз ещё не выполнен',
-    EmptyForecastSubtitle: 'Выберите область, загрузите скриншот или включите живой рынок PEARL/USDT и нажмите «Анализировать сейчас».',
+    EmptyForecastSubtitle:
+      'Выберите область, загрузите скриншот или используйте биржевые данные PEARL/USDT и нажмите «Анализировать сейчас».',
     RegionOverlayHint: 'Выделите рамкой область с графиком PEARL/USDT • Esc — отмена',
 
-    SettingsSectionCapture: 'Захват экрана и расписание',
+    SettingsSectionCapture: 'Данные, горизонт и расписание',
     SettingsSectionAi: 'ИИ-провайдер и модель',
     SettingsSectionNews: 'Источники новостей (RSS и ключевые слова)',
-    SettingsSectionNotifications: 'Уведомления, Telegram/Webhook и обновления',
+    SettingsSectionNotifications: 'Трей, автозапуск, Telegram/Webhook и обновления',
 
     SettingsIntervalLabel: 'Интервал авто-анализа (минут)',
-    SettingsAutoEnabled: 'Включить автоматический режим',
+    SettingsAutoEnabled: 'Автоматический режим по таймеру',
     SettingsProviderLabel: 'Провайдер ИИ',
     SettingsGeminiModel: 'Модель Gemini (серверный API)',
     SettingsOllamaUrl: 'Адрес сервера Ollama',
@@ -98,8 +103,8 @@ export const TRANSLATIONS = {
     NoOllamaModelsShort: 'Нет установленных моделей в Ollama',
     SettingsNotifyDirection: 'Уведомлять при смене направления',
     SettingsNotifyThreshold: 'Порог уверенности для уведомления (%)',
-    SettingsMinimizeToTray: 'Уведомления в браузере (аналог трея)',
-    SettingsAutoStart: 'Автоматически обновлять новости при запуске',
+    SettingsMinimizeToTray: 'Сворачивать в системный трей при закрытии окна (Windows)',
+    SettingsAutoStart: 'Запускать автоматически вместе с Windows',
     SettingsLanguage: 'Язык интерфейса',
 
     RegionNotSet: 'не задана',
@@ -112,10 +117,11 @@ export const TRANSLATIONS = {
     BtnDelete: 'Удалить',
     SettingsSaved: 'Настройки сохранены.',
     AutoBadgePrefix: 'Авто: ',
-    ErrorSelectImageFirst: 'Загрузите скриншот графика PEARL/USDT (или используйте «Выбрать область» / Ctrl+V) — либо дождитесь загрузки живого рынка.',
+    ErrorSelectImageFirst:
+      'Загрузите скриншот графика PEARL/USDT (или используйте «Выбрать область» / Ctrl+V) — либо дождитесь загрузки живого рынка.',
     LabelScreenshotTime: 'Скриншот сделан',
     ScreenshotNotTaken: 'не сделан',
-    LabelUpdatePeriod: 'Период обновления',
+    LabelUpdatePeriod: 'Период',
     LabelNextCapture: 'Следующий',
     AutoStatusOff: 'Авто: выкл',
     MinutesShort: 'мин',
@@ -135,7 +141,7 @@ export const TRANSLATIONS = {
     MarketRefresh: 'Обновить курс',
     HudToggleLabel: 'HUD уровней',
     VerifyAccuracyBtn: 'Проверить цены по рынку',
-    CalibrationTitle: 'Калибровка уверенности (≥70%)',
+    CalibrationTitle: 'Калибровка (≥70% / Цель-Стоп)',
     TelegramBotTokenLabel: 'Telegram Bot Token (опционально)',
     TelegramChatIdLabel: 'Telegram Chat ID',
     WebhookUrlLabel: 'Webhook URL (Discord / n8n / свой сервер)',
@@ -145,7 +151,7 @@ export const TRANSLATIONS = {
   },
   en: {
     AppTitle: 'Pearl AI Analyst',
-    SubtitlePair: 'PEARL / USDT • SafeTrade',
+    SubtitlePair: 'PEARL / USDT • SafeTrade / Gate',
     NavForecast: 'Forecast',
     NavNews: 'News',
     NavHistory: 'History',
@@ -153,6 +159,8 @@ export const TRANSLATIONS = {
 
     BtnAnalyzeNow: 'Analyze Now',
     BtnAnalyzing: 'Analyzing...',
+    BtnStartAuto: 'Start Auto',
+    BtnStopAuto: 'Stop Auto',
     BtnSelectRegion: 'Select Region',
     BtnRefreshNews: 'Refresh News',
     BtnRefreshHistory: 'Refresh',
@@ -184,7 +192,7 @@ export const TRANSLATIONS = {
     LabelNewsImpact: 'News Impact',
     LabelNewsReasons: 'News Factors',
     LabelRisks: 'Risks',
-    LabelLastScreenshot: 'Last Chart Screenshot',
+    LabelLastScreenshot: 'Chart & Levels',
     LabelResponseTime: 'AI Response Time',
     LabelModel: 'Model',
     LabelAutoMode: 'Auto Mode',
@@ -192,6 +200,7 @@ export const TRANSLATIONS = {
     LabelRegion: 'Capture Region',
     LabelVersion: 'App Version',
     LabelUpdated: 'Updated',
+    ForecastHorizonLabel: 'Forecast Horizon',
 
     Accuracy1h: 'Accuracy (1h)',
     Accuracy2h: 'Accuracy (2h)',
@@ -204,7 +213,8 @@ export const TRANSLATIONS = {
 
     GeminiConnected: 'Gemini API: connected',
     GeminiNotConfigured: 'Gemini API: not configured',
-    GeminiTooltipConnected: 'Server-side GEMINI_API_KEY is sealed (AES-256-GCM) and ready via @google/genai.',
+    GeminiTooltipConnected:
+      'Server-side GEMINI_API_KEY is sealed (AES-256-GCM) and ready via @google/genai.',
     GeminiTooltipNotConfigured: 'Server-side GEMINI_API_KEY environment variable is not set.',
 
     ConnectionStatusHeader: 'Connections',
@@ -217,16 +227,17 @@ export const TRANSLATIONS = {
     ClaudeOffline: 'Claude API: unreachable',
 
     EmptyForecastTitle: 'No forecast yet',
-    EmptyForecastSubtitle: 'Select a region, upload a PEARL/USDT screenshot, or use live market data and click «Analyze Now».',
+    EmptyForecastSubtitle:
+      'Select a region, upload a PEARL/USDT screenshot, or use live exchange data and click «Analyze Now».',
     RegionOverlayHint: 'Drag to select the PEARL/USDT chart area • Esc to cancel',
 
-    SettingsSectionCapture: 'Screen Capture & Schedule',
+    SettingsSectionCapture: 'Data, Horizon & Schedule',
     SettingsSectionAi: 'AI Provider & Model',
     SettingsSectionNews: 'News Sources (RSS & Keywords)',
-    SettingsSectionNotifications: 'Notifications, Telegram/Webhook & Updates',
+    SettingsSectionNotifications: 'Tray, Auto-start, Telegram/Webhook & Updates',
 
     SettingsIntervalLabel: 'Auto-analysis interval (minutes)',
-    SettingsAutoEnabled: 'Enable automatic mode',
+    SettingsAutoEnabled: 'Enable automatic timer mode',
     SettingsProviderLabel: 'AI Provider',
     SettingsGeminiModel: 'Gemini Model (Server-side API)',
     SettingsOllamaUrl: 'Ollama server URL',
@@ -240,8 +251,8 @@ export const TRANSLATIONS = {
     NoOllamaModelsShort: 'No models installed in Ollama',
     SettingsNotifyDirection: 'Notify on direction change',
     SettingsNotifyThreshold: 'Confidence threshold for notification (%)',
-    SettingsMinimizeToTray: 'Browser notifications (web tray equivalent)',
-    SettingsAutoStart: 'Auto-refresh news on startup',
+    SettingsMinimizeToTray: 'Minimize to system tray on close (Windows)',
+    SettingsAutoStart: 'Start automatically with Windows',
     SettingsLanguage: 'Interface language',
 
     RegionNotSet: 'not set',
@@ -254,10 +265,11 @@ export const TRANSLATIONS = {
     BtnDelete: 'Delete',
     SettingsSaved: 'Settings saved.',
     AutoBadgePrefix: 'Auto: ',
-    ErrorSelectImageFirst: 'Please select or upload a PEARL/USDT chart screenshot (or wait for live market feed).',
+    ErrorSelectImageFirst:
+      'Please select or upload a PEARL/USDT chart screenshot (or wait for live market feed).',
     LabelScreenshotTime: 'Screenshot taken',
     ScreenshotNotTaken: 'not taken',
-    LabelUpdatePeriod: 'Update period',
+    LabelUpdatePeriod: 'Interval',
     LabelNextCapture: 'Next run',
     AutoStatusOff: 'Auto: off',
     MinutesShort: 'min',
@@ -277,7 +289,7 @@ export const TRANSLATIONS = {
     MarketRefresh: 'Refresh Price',
     HudToggleLabel: 'Levels HUD',
     VerifyAccuracyBtn: 'Verify via Live Market',
-    CalibrationTitle: 'Confidence Calibration (≥70%)',
+    CalibrationTitle: 'Calibration (≥70% / Hit-Rate)',
     TelegramBotTokenLabel: 'Telegram Bot Token (optional)',
     TelegramChatIdLabel: 'Telegram Chat ID',
     WebhookUrlLabel: 'Webhook URL (Discord / n8n / custom)',

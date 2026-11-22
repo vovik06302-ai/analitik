@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { CheckCircle2, Trash2 } from 'lucide-react';
-import { ForecastHistoryEntry, HorizonAccuracy } from '../types';
+import { ForecastHistoryEntry, ForecastOutcomeStatus, HorizonAccuracy } from '../types';
 import { Language, t } from '../i18n/translations';
 import {
   calculateAccuracyMetrics,
@@ -54,29 +54,54 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     };
   };
 
+  const renderOutcomeBadge = (status?: ForecastOutcomeStatus | null) => {
+    if (status === 'target_hit') {
+      return (
+        <span className="bg-[#22C55E]/15 text-[#22C55E] border border-[#22C55E]/35 rounded-[6px] px-2 py-0.5 text-[11px] font-semibold">
+          {lang === 'en' ? 'Target ✓' : 'Цель ✓'}
+        </span>
+      );
+    }
+    if (status === 'stop_hit') {
+      return (
+        <span className="bg-[#EF4444]/15 text-[#EF4444] border border-[#EF4444]/35 rounded-[6px] px-2 py-0.5 text-[11px] font-semibold">
+          {lang === 'en' ? 'Stop ✕' : 'Стоп ✕'}
+        </span>
+      );
+    }
+    if (status === 'expired') {
+      return (
+        <span className="bg-[#64748B]/15 text-[#94A3B8] border border-[#334155] rounded-[6px] px-2 py-0.5 text-[11px]">
+          {lang === 'en' ? 'Expired' : 'Истёк'}
+        </span>
+      );
+    }
+    return (
+      <span className="bg-[#38BDF8]/10 text-[#38BDF8] rounded-[6px] px-2 py-0.5 text-[11px]">
+        {lang === 'en' ? 'Pending' : 'В работе'}
+      </span>
+    );
+  };
+
   const acc1h = formatHorizon(metrics.oneHour);
   const acc2h = formatHorizon(metrics.twoHours);
   const acc4h = formatHorizon(metrics.fourHours);
 
   const handleExportCsv = () => {
     if (entries.length === 0) {
-      setStatusMessage(
-        lang === 'en' ? 'No entries to export.' : 'Нет записей для экспорта.'
-      );
+      setStatusMessage(lang === 'en' ? 'No entries to export.' : 'Нет записей для экспорта.');
       return;
     }
     exportHistoryToCsv(entries);
-    setStatusMessage(
-      lang === 'en' ? 'CSV export downloaded.' : 'Экспорт в CSV выполнен.'
-    );
+    setStatusMessage(lang === 'en' ? 'CSV export downloaded.' : 'Экспорт в CSV выполнен.');
   };
 
   const handleVerifyClick = async () => {
     const updated = await onVerifyMarket();
     setStatusMessage(
       lang === 'en'
-        ? `Verified actual market prices for ${updated} forecast(s).`
-        : `Проверены фактические цены по рынку для ${updated} прогнозов.`
+        ? `Verified actual market prices & target/stop outcomes for ${updated} forecast(s).`
+        : `Проверены фактические цены и исходы Цель/Стоп для ${updated} прогнозов.`
     );
   };
 
@@ -88,25 +113,19 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 shrink-0">
         <div className="bg-[#151D2E] border border-[#25324D] rounded-[14px] p-4 animate-card-enter">
           <div className="text-[12.5px] text-[#94A3B8]">{t(lang, 'Accuracy1h')}</div>
-          <div className="text-[22px] font-bold text-[#00D4AA] mt-1 mb-0.5">
-            {acc1h.main}
-          </div>
+          <div className="text-[22px] font-bold text-[#00D4AA] mt-1 mb-0.5">{acc1h.main}</div>
           <div className="text-[11.5px] text-[#64748B]">{acc1h.sub}</div>
         </div>
 
         <div className="bg-[#151D2E] border border-[#25324D] rounded-[14px] p-4 animate-card-enter">
           <div className="text-[12.5px] text-[#94A3B8]">{t(lang, 'Accuracy2h')}</div>
-          <div className="text-[22px] font-bold text-[#38BDF8] mt-1 mb-0.5">
-            {acc2h.main}
-          </div>
+          <div className="text-[22px] font-bold text-[#38BDF8] mt-1 mb-0.5">{acc2h.main}</div>
           <div className="text-[11.5px] text-[#64748B]">{acc2h.sub}</div>
         </div>
 
         <div className="bg-[#151D2E] border border-[#25324D] rounded-[14px] p-4 animate-card-enter">
           <div className="text-[12.5px] text-[#94A3B8]">{t(lang, 'Accuracy4h')}</div>
-          <div className="text-[22px] font-bold text-[#F59E0B] mt-1 mb-0.5">
-            {acc4h.main}
-          </div>
+          <div className="text-[22px] font-bold text-[#F59E0B] mt-1 mb-0.5">{acc4h.main}</div>
           <div className="text-[11.5px] text-[#64748B]">{acc4h.sub}</div>
         </div>
 
@@ -119,16 +138,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           </div>
           <div className="text-[11.5px] text-[#64748B]">
             {lang === 'en'
-              ? `${metrics.calibration.highConfCorrect}/${metrics.calibration.highConfTotal} wins • Avg target err: ${
-                  metrics.calibration.avgTargetErrorPercent !== null
-                    ? `${metrics.calibration.avgTargetErrorPercent}%`
-                    : noData
-                }`
-              : `${metrics.calibration.highConfCorrect}/${metrics.calibration.highConfTotal} верных • Ср. ошибка цели: ${
-                  metrics.calibration.avgTargetErrorPercent !== null
-                    ? `${metrics.calibration.avgTargetErrorPercent}%`
-                    : noData
-                }`}
+              ? `${metrics.calibration.highConfCorrect}/${metrics.calibration.highConfTotal} wins • Target/Stop: ${metrics.calibration.targetHitCount}/${metrics.calibration.stopHitCount}`
+              : `${metrics.calibration.highConfCorrect}/${metrics.calibration.highConfTotal} верных • Цель/Стоп: ${metrics.calibration.targetHitCount}/${metrics.calibration.stopHitCount}`}
+            {metrics.calibration.targetHitRate !== null &&
+              ` (${metrics.calibration.targetHitRate}%)`}
           </div>
         </div>
       </div>
@@ -151,9 +164,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             type="button"
             onClick={() => {
               onRefreshHistory();
-              setStatusMessage(
-                lang === 'en' ? 'History refreshed.' : 'История обновлена.'
-              );
+              setStatusMessage(lang === 'en' ? 'History refreshed.' : 'История обновлена.');
             }}
             className="bg-[#1B263B] hover:bg-[#24334F] text-[#F1F5F9] border border-[#25324D] hover:border-[#384E75] rounded-[10px] px-3.5 py-2 text-[13px] font-medium cursor-pointer transition-colors"
           >
@@ -189,6 +200,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   {t(lang, 'LabelConfidence')}
                 </th>
                 <th className="px-3 py-2.5 whitespace-nowrap">
+                  {lang === 'en' ? 'Outcome' : 'Исход'}
+                </th>
+                <th className="px-3 py-2.5 whitespace-nowrap">
                   {t(lang, 'LabelTargetPrice')}
                 </th>
                 <th className="px-3 py-2.5 whitespace-nowrap">
@@ -205,7 +219,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             <tbody>
               {entries.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-[#64748B]">
+                  <td colSpan={9} className="px-4 py-10 text-center text-[#64748B]">
                     {t(lang, 'NoData')}
                   </td>
                 </tr>
@@ -215,9 +229,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   return (
                     <tr
                       key={entry.id}
-                      onClick={() =>
-                        setSelectedId(isSelected ? null : entry.id)
-                      }
+                      onClick={() => setSelectedId(isSelected ? null : entry.id)}
                       className={`border-b border-[#222E46] cursor-pointer transition-colors ${
                         isSelected
                           ? 'bg-[#20314D]'
@@ -236,10 +248,16 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                         className="px-3 py-2.5 whitespace-nowrap font-bold"
                         style={{ color: getDirectionColor(entry.direction) }}
                       >
-                        {getDirectionLabel(entry.direction, lang)}
+                        {getDirectionLabel(entry.direction, lang)}{' '}
+                        <span className="text-[11px] font-normal text-[#94A3B8]">
+                          ({entry.horizonHours ?? 4}{lang === 'en' ? 'h' : 'ч'})
+                        </span>
                       </td>
                       <td className="px-3 py-2.5 whitespace-nowrap text-[#F1F5F9]">
                         {entry.confidence}%
+                      </td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        {renderOutcomeBadge(entry.outcomeStatus)}
                       </td>
                       <td className="px-3 py-2.5 whitespace-nowrap text-[#F1F5F9]">
                         {formatPrice(entry.targetPrice, noData)}
@@ -269,12 +287,22 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                 <span className="font-semibold text-[#F1F5F9]">
                   #{selectedEntry.id} • {formatLocalDateTime(selectedEntry.createdAtUtc)}
                 </span>
+                {renderOutcomeBadge(selectedEntry.outcomeStatus)}
                 <span>
                   {lang === 'en' ? 'Market' : 'Рынок'}:{' '}
                   <strong className="text-[#00D4AA]">
                     {formatPrice(selectedEntry.marketPriceAtForecast ?? selectedEntry.priceNow, noData)}
                   </strong>
                 </span>
+                {selectedEntry.highDuringHorizon != null && selectedEntry.lowDuringHorizon != null && (
+                  <span>
+                    {lang === 'en' ? 'Range' : 'Диапазон'}:{' '}
+                    <strong className="text-[#F1F5F9]">
+                      {formatPrice(selectedEntry.lowDuringHorizon, noData)} —{' '}
+                      {formatPrice(selectedEntry.highDuringHorizon, noData)}
+                    </strong>
+                  </span>
+                )}
                 <span>
                   1h:{' '}
                   <strong className="text-[#F1F5F9]">

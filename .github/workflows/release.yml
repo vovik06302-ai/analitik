@@ -99,7 +99,7 @@ jobs:
               --repo "$REPO" \
               --target "${{ github.sha }}" \
               --title "Pearl AI Analyst v$VER" \
-              --notes "Pearl AI Analyst v$VER (Live PEARL/USDT Market, Multi-Model AI Council, News Radar, SQLite History Audit, Telegram/Webhook Alerts)."
+              --notes "Pearl AI Analyst v$VER: SafeTrade → Gate.io cascade with Coinbase/Kraken cross-check, server-side technical indicators (EMA/RSI/MACD/ATR/Bollinger/VWAP/POC/MTF), Order Book bands & CVD, BTC/ETH macro context, prioritized PEARL News Radar, selectable 1h/2h/4h forecast horizon with logical guardrails, Target-vs-Stop verification, weighted AI Council, and Windows Tray + auto-start."
           fi
           gh release upload "$TAG" Releases/* --clobber --repo "$REPO"
 

@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { XMLParser } from 'fast-xml-parser';
 import {
   AiProviderType,
@@ -12,22 +12,36 @@ import {
   DEFAULT_GEMINI_MODEL,
   DEFAULT_OLLAMA_URL,
   ForecastDirection,
+  ForecastHistoryEntry,
+  ForecastHorizonHours,
+  ForecastOutcomeStatus,
   ForecastResult,
   MarketSnapshot,
   ModelVote,
   NewsItem,
+  OhlcCandle,
   ServiceConnectionState,
 } from './src/types';
-import { buildAnalysisPrompt, buildRetryPrompt, tryParseForecast } from './server/forecastParser';
+import {
+  buildAnalysisPrompt,
+  buildRetryPrompt,
+  tryParseForecast,
+  validateForecastGuardrails,
+} from './server/forecastParser';
 import { keyVault } from './server/keyVault';
-import { fetchPearlMarketSnapshot, fetchPearlPriceNearTime } from './server/marketService';
-import { scoreNewsItems } from './server/newsRadar';
+import {
+  fetchPearlCandlesInRange,
+  fetchPearlMarketSnapshot,
+  fetchPearlPriceNearTime,
+} from './server/marketService';
+import { buildCryptoNewsQuery, prioritizeAndSelectNews } from './server/newsRadar';
 import { forecastDb } from './server/database';
-import { dispatchExternalAlerts } from './server/alertService';
+import { dispatchExternalAlerts, isSafePublicUrl } from './server/alertService';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
+const RSS_TIMEOUT_MS = 7000;
 
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
@@ -155,24 +169,19 @@ async function fetchFeedSafe(
   queryTag: string,
   errors: Set<string>
 ): Promise<NewsItem[]> {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(urlStr);
-    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-      return [];
-    }
-  } catch {
+  if (!isSafePublicUrl(urlStr)) {
     return [];
   }
+  const parsedUrl = new URL(urlStr);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 6500);
+  const timer = setTimeout(() => controller.abort(), RSS_TIMEOUT_MS);
 
   try {
     const response = await fetch(parsedUrl.toString(), {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'PearlAiAnalyst/1.1 (+https://github.com/vovik06302-ai/pearl-rig-core)',
+        'User-Agent': 'PearlAiAnalyst/1.0.26 (+https://github.com/vovik06302-ai/analitik)',
         Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml',
       },
     });
@@ -186,7 +195,11 @@ async function fetchFeedSafe(
     return parseRssOrAtom(xml, parsedUrl.hostname, queryTag);
   } catch (err) {
     if ((err as Error)?.name === 'AbortError') {
-      errors.add(`Превышено время ожидания ответа от ${parsedUrl.hostname} (20 с).`);
+      errors.add(
+        `Превышено время ожидания ответа от ${parsedUrl.hostname} (${Math.round(
+          RSS_TIMEOUT_MS / 1000
+        )} с).`
+      );
     } else {
       const msg = err instanceof Error ? err.message : String(err);
       errors.add(`${parsedUrl.hostname}: ${msg}`);
@@ -199,7 +212,23 @@ async function fetchFeedSafe(
 
 function normalizeOllamaUrl(url?: string): string {
   const trimmed = (url ?? '').trim();
-  return (trimmed || process.env.OLLAMA_URL || DEFAULT_OLLAMA_URL).replace(/\/+$/, '');
+  const candidate = (trimmed || process.env.OLLAMA_URL || DEFAULT_OLLAMA_URL).replace(/\/+$/, '');
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return DEFAULT_OLLAMA_URL;
+    }
+    return candidate;
+  } catch {
+    return DEFAULT_OLLAMA_URL;
+  }
+}
+
+function normalizeHorizonHours(raw: unknown): ForecastHorizonHours {
+  const n = Number(raw);
+  if (n === 1) return 1;
+  if (n === 2) return 2;
+  return 4;
 }
 
 function stripDataUrlPrefix(base64OrDataUrl: string): { data: string; mimeType: string } {
@@ -216,19 +245,32 @@ interface ProviderRunParams {
   imageInput: string;
   news: NewsItem[];
   lang: 'ru' | 'en';
+  horizonHours: ForecastHorizonHours;
+  recentHistory: ForecastHistoryEntry[];
   market?: MarketSnapshot | null;
   claudeApiKey?: string;
   ollamaUrl?: string;
 }
 
 async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastResult> {
-  const { provider, model, imageInput, news, lang, market, claudeApiKey, ollamaUrl } = params;
+  const {
+    provider,
+    model,
+    imageInput,
+    news,
+    lang,
+    horizonHours,
+    recentHistory,
+    market,
+    claudeApiKey,
+    ollamaUrl,
+  } = params;
   const hasImage = Boolean(imageInput.trim());
   const { data: base64Data, mimeType } = hasImage
     ? stripDataUrlPrefix(imageInput)
     : { data: '', mimeType: 'image/png' };
 
-  const prompt = buildAnalysisPrompt(news, lang, market, hasImage);
+  const prompt = buildAnalysisPrompt(news, lang, market, hasImage, horizonHours, recentHistory);
   const startedAt = Date.now();
 
   if (provider === AiProviderType.Gemini) {
@@ -244,7 +286,7 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
     const ai = new GoogleGenAI({
       apiKey,
       httpOptions: {
-        timeout: 14000,
+        timeout: 28000,
         headers: {
           'User-Agent': 'aistudio-build',
         },
@@ -258,7 +300,11 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
         : [selectedModel];
 
     let lastGeminiErrMsg = '';
-    for (const activeGeminiModel of geminiModelsToTry) {
+    let fallbackReason = '';
+
+    for (let mIdx = 0; mIdx < geminiModelsToTry.length; mIdx++) {
+      const activeGeminiModel = geminiModelsToTry[mIdx];
+      const isFallbackModel = mIdx > 0;
       let lastError = '';
       let currentPrompt = prompt;
       let shouldFallbackModel = false;
@@ -275,48 +321,71 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
         }
         parts.push({ text: currentPrompt });
 
+        const config: Record<string, unknown> = {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              price_now: { type: Type.NUMBER, nullable: true },
+              direction: { type: Type.STRING },
+              confidence: { type: Type.INTEGER },
+              support: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+              resistance: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+              target_price: { type: Type.NUMBER, nullable: true },
+              stop_price: { type: Type.NUMBER, nullable: true },
+              chart_reasons: { type: Type.ARRAY, items: { type: Type.STRING } },
+              news_impact: { type: Type.STRING },
+              news_reasons: { type: Type.ARRAY, items: { type: Type.STRING } },
+              risks: { type: Type.ARRAY, items: { type: Type.STRING } },
+            },
+            required: [
+              'direction',
+              'confidence',
+              'support',
+              'resistance',
+              'chart_reasons',
+              'news_impact',
+              'news_reasons',
+              'risks',
+            ],
+          },
+        };
+
+        if (activeGeminiModel === 'gemini-4-hydrogen') {
+          config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+        }
+
         try {
           const response = await ai.models.generateContent({
             model: activeGeminiModel,
             contents: { parts },
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  price_now: { type: Type.NUMBER, nullable: true },
-                  direction: { type: Type.STRING },
-                  confidence: { type: Type.INTEGER },
-                  support: { type: Type.ARRAY, items: { type: Type.NUMBER } },
-                  resistance: { type: Type.ARRAY, items: { type: Type.NUMBER } },
-                  target_price: { type: Type.NUMBER, nullable: true },
-                  stop_price: { type: Type.NUMBER, nullable: true },
-                  chart_reasons: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  news_impact: { type: Type.STRING },
-                  news_reasons: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  risks: { type: Type.ARRAY, items: { type: Type.STRING } },
-                },
-                required: [
-                  'direction',
-                  'confidence',
-                  'support',
-                  'resistance',
-                  'chart_reasons',
-                  'news_impact',
-                  'news_reasons',
-                  'risks',
-                ],
-              },
-            },
+            config,
           });
 
           const rawText = response.text ?? '';
           const parsed = tryParseForecast(rawText);
           if (parsed.success && parsed.result) {
+            const check = validateForecastGuardrails(parsed.result, market, horizonHours);
+            if (check.fatalErrors.length > 0 && attempt === 1) {
+              lastError = check.fatalErrors.join(' ');
+              currentPrompt = `${prompt}\n\n${buildRetryPrompt(lastError)}`;
+              continue;
+            }
+
+            const finalWarnings = [
+              ...(check.sanitized.guardrailWarnings ?? []),
+              ...check.fatalErrors,
+            ];
             return {
-              ...parsed.result,
-              priceNow: parsed.result.priceNow ?? market?.priceUsd ?? null,
+              ...check.sanitized,
+              guardrailWarnings: finalWarnings.length > 0 ? finalWarnings : undefined,
               modelName: activeGeminiModel,
+              requestedModel: selectedModel,
+              fallbackNotice: isFallbackModel
+                ? lang === 'en'
+                  ? `Fallback to ${activeGeminiModel} (${selectedModel}: ${fallbackReason || 'temporarily unavailable'})`
+                  : `Сработала резервная модель ${activeGeminiModel} (${selectedModel}: ${fallbackReason || 'временно недоступна'})`
+                : undefined,
               providerName: 'Gemini API',
               responseTimeMs: Date.now() - startedAt,
               createdAtUtc: new Date().toISOString(),
@@ -330,12 +399,17 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
           lastGeminiErrMsg = rawErr;
           if (
             rawErr.includes('503') ||
+            rawErr.includes('504') ||
             rawErr.includes('UNAVAILABLE') ||
+            rawErr.includes('DEADLINE_EXCEEDED') ||
             rawErr.includes('high demand') ||
             rawErr.includes('429') ||
+            rawErr.includes('404') ||
             rawErr.toLowerCase().includes('timeout') ||
+            rawErr.toLowerCase().includes('deadline') ||
             rawErr.toLowerCase().includes('abort')
           ) {
+            fallbackReason = rawErr.slice(0, 120);
             shouldFallbackModel = true;
             break;
           }
@@ -362,9 +436,7 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
     const apiKey = String(claudeApiKey || process.env.ANTHROPIC_API_KEY || '').trim();
     if (!apiKey) {
       throw new Error(
-        lang === 'en'
-          ? 'Claude API key is missing.'
-          : 'Не указан ключ Claude API.'
+        lang === 'en' ? 'Claude API key is missing.' : 'Не указан ключ Claude API.'
       );
     }
 
@@ -382,9 +454,7 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
     }
     contentParts.push({ type: 'text', text: prompt });
 
-    const messages: Array<Record<string, unknown>> = [
-      { role: 'user', content: contentParts },
-    ];
+    const messages: Array<Record<string, unknown>> = [{ role: 'user', content: contentParts }];
 
     let lastError = '';
     for (let attempt = 1; attempt <= 2; attempt++) {
@@ -397,10 +467,11 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
         },
         body: JSON.stringify({
           model: modelName,
-          max_tokens: 1500,
+          max_tokens: 1600,
           temperature: 0.1,
           messages,
         }),
+        signal: AbortSignal.timeout(30000),
       });
 
       const bodyText = await response.text();
@@ -418,10 +489,22 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
 
       const parsed = tryParseForecast(rawText);
       if (parsed.success && parsed.result) {
+        const check = validateForecastGuardrails(parsed.result, market, horizonHours);
+        if (check.fatalErrors.length > 0 && attempt === 1) {
+          lastError = check.fatalErrors.join(' ');
+          messages.push({ role: 'assistant', content: rawText });
+          messages.push({ role: 'user', content: buildRetryPrompt(lastError) });
+          continue;
+        }
+        const finalWarnings = [
+          ...(check.sanitized.guardrailWarnings ?? []),
+          ...check.fatalErrors,
+        ];
         return {
-          ...parsed.result,
-          priceNow: parsed.result.priceNow ?? market?.priceUsd ?? null,
+          ...check.sanitized,
+          guardrailWarnings: finalWarnings.length > 0 ? finalWarnings : undefined,
           modelName,
+          requestedModel: modelName,
           providerName: 'Claude API',
           responseTimeMs: Date.now() - startedAt,
           createdAtUtc: new Date().toISOString(),
@@ -465,6 +548,7 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
         options: { temperature: 0.1 },
         messages,
       }),
+      signal: AbortSignal.timeout(90000),
     });
 
     const responseBody = await response.text();
@@ -477,10 +561,22 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
     const parsed = tryParseForecast(rawText);
 
     if (parsed.success && parsed.result) {
+      const check = validateForecastGuardrails(parsed.result, market, horizonHours);
+      if (check.fatalErrors.length > 0 && attempt === 1) {
+        lastError = check.fatalErrors.join(' ');
+        messages.push({ role: 'assistant', content: rawText });
+        messages.push({ role: 'user', content: buildRetryPrompt(lastError) });
+        continue;
+      }
+      const finalWarnings = [
+        ...(check.sanitized.guardrailWarnings ?? []),
+        ...check.fatalErrors,
+      ];
       return {
-        ...parsed.result,
-        priceNow: parsed.result.priceNow ?? market?.priceUsd ?? null,
+        ...check.sanitized,
+        guardrailWarnings: finalWarnings.length > 0 ? finalWarnings : undefined,
         modelName: model,
+        requestedModel: model,
         providerName: 'Ollama',
         responseTimeMs: Date.now() - startedAt,
         createdAtUtc: new Date().toISOString(),
@@ -497,15 +593,62 @@ async function analyzeWithProvider(params: ProviderRunParams): Promise<ForecastR
   throw new Error(`Не удалось разобрать ответ модели Ollama в JSON: ${lastError}`);
 }
 
+function evaluateTargetStopOutcome(
+  entry: ForecastHistoryEntry,
+  candles: OhlcCandle[],
+  horizonFinished: boolean
+): {
+  outcomeStatus: ForecastOutcomeStatus;
+  highDuringHorizon: number | null;
+  lowDuringHorizon: number | null;
+} {
+  if (candles.length === 0) {
+    return {
+      outcomeStatus: horizonFinished ? 'expired' : 'pending',
+      highDuringHorizon: null,
+      lowDuringHorizon: null,
+    };
+  }
+
+  const highDuringHorizon = Math.max(...candles.map((c) => c.high));
+  const lowDuringHorizon = Math.min(...candles.map((c) => c.low));
+
+  const target = entry.targetPrice;
+  const stop = entry.stopPrice;
+
+  if (entry.direction === ForecastDirection.Up) {
+    for (const c of candles) {
+      const hitStop = stop !== null && c.low <= stop;
+      const hitTarget = target !== null && c.high >= target;
+      // Conservative tie-breaker: if same 5m candle hits both, treat as stop_hit
+      if (hitStop) return { outcomeStatus: 'stop_hit', highDuringHorizon, lowDuringHorizon };
+      if (hitTarget) return { outcomeStatus: 'target_hit', highDuringHorizon, lowDuringHorizon };
+    }
+  } else if (entry.direction === ForecastDirection.Down) {
+    for (const c of candles) {
+      const hitStop = stop !== null && c.high >= stop;
+      const hitTarget = target !== null && c.low <= target;
+      if (hitStop) return { outcomeStatus: 'stop_hit', highDuringHorizon, lowDuringHorizon };
+      if (hitTarget) return { outcomeStatus: 'target_hit', highDuringHorizon, lowDuringHorizon };
+    }
+  }
+
+  return {
+    outcomeStatus: horizonFinished ? 'expired' : 'pending',
+    highDuringHorizon,
+    lowDuringHorizon,
+  };
+}
+
 async function maybeSendAlertsForForecast(
   result: ForecastResult,
   market: MarketSnapshot | null,
   reqBody: Record<string, unknown>,
   lang: 'ru' | 'en'
 ): Promise<void> {
-  const botToken = String(reqBody?.telegramBotToken ?? '').trim();
-  const chatId = String(reqBody?.telegramChatId ?? '').trim();
-  const webhookUrl = String(reqBody?.webhookUrl ?? '').trim();
+  const botToken = String(reqBody?.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  const chatId = String(reqBody?.telegramChatId || process.env.TELEGRAM_CHAT_ID || '').trim();
+  const webhookUrl = String(reqBody?.webhookUrl || process.env.ALERT_WEBHOOK_URL || '').trim();
 
   if (!((botToken && chatId) || webhookUrl)) return;
 
@@ -524,7 +667,8 @@ async function maybeSendAlertsForForecast(
     return;
   }
 
-  const title = `Pearl AI Analyst — ${result.direction.toUpperCase()} (${result.confidence}%)`;
+  const horizon = result.horizonHours ?? 4;
+  const title = `Pearl AI Analyst — ${result.direction.toUpperCase()} (${result.confidence}%, ${horizon}h)`;
   const lines = [
     lang === 'en'
       ? `Price: ${result.priceNow ?? 'n/a'} | Target: ${result.targetPrice ?? 'n/a'} | Stop: ${result.stopPrice ?? 'n/a'}`
@@ -551,7 +695,7 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '25mb' }));
 
-  // 1. Live PEARL/USDT Market Snapshot + Anomalies
+  // 1. Live PEARL/USDT Market Snapshot + Technical Indicators + Macro Context
   app.get('/api/market', async (req, res) => {
     try {
       const force = req.query.force === '1';
@@ -563,7 +707,7 @@ async function startServer() {
     }
   });
 
-  // 2. News fetching & News Radar scoring
+  // 2. News fetching & News Radar scoring (score FIRST, guaranteed DirectPearl quota!)
   app.post('/api/news', async (req, res) => {
     try {
       const rssFeeds: string[] = Array.isArray(req.body?.rssFeeds) ? req.body.rssFeeds : [];
@@ -584,7 +728,9 @@ async function startServer() {
       }
 
       for (const kw of uniqueKeywords) {
-        const encoded = encodeURIComponent(`"${kw}"`);
+        const scopedQuery = buildCryptoNewsQuery(kw);
+        if (!scopedQuery) continue;
+        const encoded = encodeURIComponent(scopedQuery);
         const googleNewsUrl = `https://news.google.com/rss/search?q=${encoded}&hl=en-US&gl=US&ceid=US:en`;
         tasks.push(fetchFeedSafe(googleNewsUrl, kw, errors));
       }
@@ -592,6 +738,7 @@ async function startServer() {
       const batches = await Promise.all(tasks);
       const all = batches.flat().filter((item) => item.title.length > 0);
 
+      // Deduplicate across all sources first without premature truncation
       const map = new Map<string, NewsItem>();
       for (const item of all) {
         const key = (item.link || item.title).trim().toLowerCase();
@@ -603,18 +750,10 @@ async function startServer() {
         }
       }
 
-      const deduplicated = Array.from(map.values())
-        .sort((a, b) => {
-          const ta = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
-          const tb = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
-          return tb - ta;
-        })
-        .slice(0, 40);
-
-      const scored = scoreNewsItems(deduplicated);
+      const prioritized = prioritizeAndSelectNews(Array.from(map.values()), 40, 15);
 
       res.json({
-        items: scored,
+        items: prioritized,
         errors: Array.from(errors),
       });
     } catch (err) {
@@ -748,8 +887,8 @@ async function startServer() {
         statusMessage: lang === 'en' ? 'Claude API: no API key' : 'Claude API: ключ не задан',
         troubleshootingTooltip:
           lang === 'en'
-            ? 'Enter your Anthropic API key in Settings -> AI Provider & Model.'
-            : 'Укажите ключ Anthropic API в разделе «Настройки» -> «ИИ-провайдер и модель».',
+            ? 'Enter your Anthropic API key in Settings -> AI Provider & Model or set ANTHROPIC_API_KEY in .env.'
+            : 'Укажите ключ Anthropic API в «Настройки» или в серверном файле .env (ANTHROPIC_API_KEY).',
       });
       return;
     }
@@ -818,14 +957,24 @@ async function startServer() {
     }
   });
 
-  // 6. Single-Provider Multimodal Analysis (+ live market & SQLite persistence)
+  // 6. Single-Provider Multimodal Analysis (+ technical indicators, feedback & SQLite persistence)
   app.post('/api/analyze', async (req, res) => {
     try {
-      const provider: AiProviderType = req.body?.provider ?? AiProviderType.Gemini;
+      const rawProvider = String(req.body?.provider ?? AiProviderType.Gemini);
+      if (
+        rawProvider !== AiProviderType.Gemini &&
+        rawProvider !== AiProviderType.Claude &&
+        rawProvider !== AiProviderType.Ollama
+      ) {
+        res.status(400).json({ error: `Неподдерживаемый провайдер: ${rawProvider}` });
+        return;
+      }
+      const provider: AiProviderType = rawProvider;
       const model: string = String(req.body?.model ?? '').trim();
       const imageInput: string = String(req.body?.imageBase64 ?? '').trim();
       const news: NewsItem[] = Array.isArray(req.body?.news) ? req.body.news : [];
       const lang: 'ru' | 'en' = req.body?.lang === 'en' ? 'en' : 'ru';
+      const horizonHours = normalizeHorizonHours(req.body?.horizonHours);
       const providedMarket: MarketSnapshot | null = req.body?.marketSnapshot ?? null;
 
       let market = providedMarket;
@@ -847,12 +996,16 @@ async function startServer() {
         return;
       }
 
+      const recentHistory = forecastDb.getRecentFeedback(3);
+
       const result = await analyzeWithProvider({
         provider,
         model,
         imageInput,
         news,
         lang,
+        horizonHours,
+        recentHistory,
         market,
         claudeApiKey: req.body?.claudeApiKey,
         ollamaUrl: req.body?.ollamaUrl,
@@ -860,6 +1013,7 @@ async function startServer() {
 
       const fullResult: ForecastResult = {
         ...result,
+        horizonHours,
         screenshotDataUrl: imageInput || undefined,
         marketSnapshot: market,
       };
@@ -867,7 +1021,9 @@ async function startServer() {
       const historyEntry = forecastDb.insertForecast(
         fullResult,
         news,
-        market?.priceUsd ?? fullResult.priceNow ?? null
+        market?.priceUsd ?? fullResult.priceNow ?? null,
+        horizonHours,
+        market?.technicalIndicators?.atrPercent ?? null
       );
 
       void maybeSendAlertsForForecast(fullResult, market, req.body ?? {}, lang);
@@ -882,12 +1038,13 @@ async function startServer() {
     }
   });
 
-  // 7. Multi-Model AI Council (Consensus Analysis)
+  // 7. Multi-Model AI Council (Historical-Accuracy Weighted Consensus Analysis)
   app.post('/api/analyze/consensus', async (req, res) => {
     try {
       const imageInput: string = String(req.body?.imageBase64 ?? '').trim();
       const news: NewsItem[] = Array.isArray(req.body?.news) ? req.body.news : [];
       const lang: 'ru' | 'en' = req.body?.lang === 'en' ? 'en' : 'ru';
+      const horizonHours = normalizeHorizonHours(req.body?.horizonHours);
       const geminiModel = String(req.body?.geminiModel ?? DEFAULT_GEMINI_MODEL).trim();
       const claudeModel = String(req.body?.claudeModel ?? DEFAULT_CLAUDE_MODEL).trim();
       const claudeApiKey = String(req.body?.claudeApiKey || process.env.ANTHROPIC_API_KEY || '').trim();
@@ -921,7 +1078,6 @@ async function startServer() {
         candidates.push({ provider: AiProviderType.Claude, model: claudeModel });
       }
 
-      // Check if local Ollama is reachable with selected model
       if (ollamaModel) {
         try {
           const ctrl = new AbortController();
@@ -946,6 +1102,9 @@ async function startServer() {
         return;
       }
 
+      const recentHistory = forecastDb.getRecentFeedback(3);
+      const historicalWinRates = forecastDb.getModelHistoricalWinRates();
+
       const startedAll = Date.now();
       const settled = await Promise.all(
         candidates.map(async (c): Promise<{ vote: ModelVote; full?: ForecastResult }> => {
@@ -957,16 +1116,24 @@ async function startServer() {
               imageInput,
               news,
               lang,
+              horizonHours,
+              recentHistory,
               market,
               claudeApiKey,
               ollamaUrl,
             });
+            const hist = historicalWinRates.get(out.modelName.toLowerCase());
+            const multiplier =
+              hist && hist.sampleSize >= 5 ? Number((0.5 + hist.winRate / 100).toFixed(2)) : 1;
+            const weight = Number((Math.max(1, out.confidence) * multiplier).toFixed(1));
             return {
               vote: {
                 provider: out.providerName,
                 model: out.modelName,
                 direction: out.direction,
                 confidence: out.confidence,
+                weight,
+                historicalWinRate: hist && hist.sampleSize >= 5 ? hist.winRate : null,
                 priceNow: out.priceNow,
                 targetPrice: out.targetPrice,
                 stopPrice: out.stopPrice,
@@ -981,6 +1148,8 @@ async function startServer() {
                 model: c.model,
                 direction: ForecastDirection.Unknown,
                 confidence: 0,
+                weight: 0,
+                historicalWinRate: null,
                 priceNow: null,
                 targetPrice: null,
                 stopPrice: null,
@@ -999,11 +1168,12 @@ async function startServer() {
         return;
       }
 
-      // Compute weighted consensus direction
+      // Compute historical-accuracy weighted consensus direction
       const scoreByDir = new Map<ForecastDirection, number>();
       for (const s of succeeded) {
         const dir = s.full!.direction;
-        scoreByDir.set(dir, (scoreByDir.get(dir) ?? 0) + Math.max(1, s.full!.confidence));
+        const w = s.vote.weight ?? Math.max(1, s.full!.confidence);
+        scoreByDir.set(dir, (scoreByDir.get(dir) ?? 0) + w);
       }
 
       let winningDir = succeeded[0].full!.direction;
@@ -1023,13 +1193,17 @@ async function startServer() {
         aligned.reduce((acc, s) => acc + s.full!.confidence, 0) / aligned.length
       );
 
-      const averageNullable = (vals: Array<number | null>): number | null => {
-        const valid = vals.filter((v): v is number => v !== null && Number.isFinite(v));
+      const weightedAvgNullable = (
+        items: Array<{ val: number | null; weight: number }>
+      ): number | null => {
+        const valid = items.filter((i) => i.val !== null && Number.isFinite(i.val));
         if (valid.length === 0) return null;
-        return Number((valid.reduce((a, b) => a + b, 0) / valid.length).toFixed(8));
+        const totalW = valid.reduce((a, b) => a + Math.max(1, b.weight), 0);
+        const sum = valid.reduce((a, b) => a + b.val! * Math.max(1, b.weight), 0);
+        return Number((sum / totalW).toFixed(8));
       };
 
-      const primary = aligned[0].full!;
+      const primary = aligned.sort((a, b) => (b.vote.weight ?? 0) - (a.vote.weight ?? 0))[0].full!;
       const consensus: ConsensusSummary = {
         totalQueried: candidates.length,
         totalSucceeded: succeeded.length,
@@ -1038,17 +1212,30 @@ async function startServer() {
         votes: settled.map((s) => s.vote),
       };
 
+      const fallbackNotices = succeeded
+        .map((s) => s.full?.fallbackNotice)
+        .filter((n): n is string => Boolean(n));
+
       const mergedResult: ForecastResult = {
         ...primary,
         direction: winningDir,
+        horizonHours,
         confidence: hasDisagreement ? Math.max(25, Math.round(avgConfidence * 0.88)) : avgConfidence,
-        priceNow: averageNullable(succeeded.map((s) => s.full!.priceNow)) ?? market?.priceUsd ?? null,
-        targetPrice: averageNullable(aligned.map((s) => s.full!.targetPrice)),
-        stopPrice: averageNullable(aligned.map((s) => s.full!.stopPrice)),
+        priceNow:
+          weightedAvgNullable(
+            succeeded.map((s) => ({ val: s.full!.priceNow, weight: s.vote.weight ?? 1 }))
+          ) ??
+          market?.priceUsd ??
+          null,
+        targetPrice: weightedAvgNullable(
+          aligned.map((s) => ({ val: s.full!.targetPrice, weight: s.vote.weight ?? 1 }))
+        ),
+        stopPrice: weightedAvgNullable(
+          aligned.map((s) => ({ val: s.full!.stopPrice, weight: s.vote.weight ?? 1 }))
+        ),
+        fallbackNotice: fallbackNotices.length > 0 ? fallbackNotices.join(' | ') : undefined,
         providerName:
-          succeeded.length > 1
-            ? `Council (${succeeded.length})`
-            : primary.providerName,
+          succeeded.length > 1 ? `Council (${succeeded.length})` : primary.providerName,
         modelName: succeeded.map((s) => s.full!.modelName).join(' + '),
         responseTimeMs: Date.now() - startedAll,
         createdAtUtc: new Date().toISOString(),
@@ -1060,7 +1247,9 @@ async function startServer() {
       const historyEntry = forecastDb.insertForecast(
         mergedResult,
         news,
-        market?.priceUsd ?? mergedResult.priceNow ?? null
+        market?.priceUsd ?? mergedResult.priceNow ?? null,
+        horizonHours,
+        market?.technicalIndicators?.atrPercent ?? null
       );
 
       void maybeSendAlertsForForecast(mergedResult, market, req.body ?? {}, lang);
@@ -1075,7 +1264,7 @@ async function startServer() {
     }
   });
 
-  // 8. Persistent SQLite Forecast History + Audit + Market Accuracy Verification
+  // 8. Persistent SQLite Forecast History + Audit + High/Low Target-vs-Stop Market Verification
   app.get('/api/history', (_req, res) => {
     try {
       const entries = forecastDb.getAll();
@@ -1102,32 +1291,85 @@ async function startServer() {
       const nowMs = Date.now();
       let updatedCount = 0;
 
-      // Verify up to 8 pending entries per request to respect CoinGecko rate limits
       const candidates = entries
         .filter((e) => {
           const ageMs = nowMs - new Date(e.createdAtUtc).getTime();
           const needs1h = ageMs >= 3600_000 && e.actualPrice1h === null;
           const needs2h = ageMs >= 2 * 3600_000 && e.actualPrice2h === null;
           const needs4h = ageMs >= 4 * 3600_000 && e.actualPrice4h === null;
-          return needs1h || needs2h || needs4h;
+          const needsOutcome =
+            ageMs >= 15 * 60_000 && (!e.outcomeStatus || e.outcomeStatus === 'pending');
+          return needs1h || needs2h || needs4h || needsOutcome;
         })
-        .slice(0, 8);
+        .slice(0, 12);
 
       for (const entry of candidates) {
         const createdMs = new Date(entry.createdAtUtc).getTime();
-        const updates: { h1?: number | null; h2?: number | null; h4?: number | null } = {};
+        const horizonHrs = entry.horizonHours && entry.horizonHours > 0 ? entry.horizonHours : 4;
+        const horizonEndMs = createdMs + horizonHrs * 3600_000;
+        const horizonFinished = nowMs >= horizonEndMs;
+
+        const updates: {
+          h1?: number | null;
+          h2?: number | null;
+          h4?: number | null;
+          outcomeStatus?: ForecastOutcomeStatus | null;
+          highDuringHorizon?: number | null;
+          lowDuringHorizon?: number | null;
+        } = {};
+
+        // Fetch 5m candles from forecast creation up to min(now, max(4h, horizon)) for fast, accurate check
+        const maxWindowEnd = Math.min(nowMs, createdMs + Math.max(4, horizonHrs) * 3600_000 + 15 * 60_000);
+        const rangeCandles = await fetchPearlCandlesInRange(createdMs, maxWindowEnd);
+
+        const pickCandleCloseNear = (targetMs: number): number | null => {
+          let best: OhlcCandle | null = null;
+          let bestDiff = 25 * 60_000;
+          for (const c of rangeCandles) {
+            const diff = Math.abs(c.timestamp - targetMs);
+            if (diff < bestDiff && c.close > 0) {
+              bestDiff = diff;
+              best = c;
+            }
+          }
+          return best ? best.close : null;
+        };
 
         if (nowMs - createdMs >= 3600_000 && entry.actualPrice1h === null) {
-          const p1 = await fetchPearlPriceNearTime(createdMs + 3600_000);
+          const p1 =
+            pickCandleCloseNear(createdMs + 3600_000) ??
+            (await fetchPearlPriceNearTime(createdMs + 3600_000));
           if (p1 !== null) updates.h1 = p1;
         }
         if (nowMs - createdMs >= 2 * 3600_000 && entry.actualPrice2h === null) {
-          const p2 = await fetchPearlPriceNearTime(createdMs + 2 * 3600_000);
+          const p2 =
+            pickCandleCloseNear(createdMs + 2 * 3600_000) ??
+            (await fetchPearlPriceNearTime(createdMs + 2 * 3600_000));
           if (p2 !== null) updates.h2 = p2;
         }
         if (nowMs - createdMs >= 4 * 3600_000 && entry.actualPrice4h === null) {
-          const p4 = await fetchPearlPriceNearTime(createdMs + 4 * 3600_000);
+          const p4 =
+            pickCandleCloseNear(createdMs + 4 * 3600_000) ??
+            (await fetchPearlPriceNearTime(createdMs + 4 * 3600_000));
           if (p4 !== null) updates.h4 = p4;
+        }
+
+        if (!entry.outcomeStatus || entry.outcomeStatus === 'pending') {
+          const horizonCandles = rangeCandles.filter(
+            (c) => c.timestamp >= createdMs && c.timestamp <= horizonEndMs
+          );
+          if (horizonCandles.length > 0 || horizonFinished) {
+            const outcome = evaluateTargetStopOutcome(entry, horizonCandles, horizonFinished);
+            if (outcome.outcomeStatus !== entry.outcomeStatus) {
+              updates.outcomeStatus = outcome.outcomeStatus;
+            }
+            if (outcome.highDuringHorizon !== null) {
+              updates.highDuringHorizon = outcome.highDuringHorizon;
+            }
+            if (outcome.lowDuringHorizon !== null) {
+              updates.lowDuringHorizon = outcome.lowDuringHorizon;
+            }
+          }
         }
 
         if (Object.keys(updates).length > 0) {
@@ -1156,9 +1398,9 @@ async function startServer() {
           lang === 'en'
             ? 'Connection verified! Telegram / Webhook alerts are active for PEARL/USDT.'
             : 'Проверка связи успешна! Уведомления Telegram / Webhook активны для PEARL/USDT.',
-        telegramBotToken: String(req.body?.telegramBotToken ?? ''),
-        telegramChatId: String(req.body?.telegramChatId ?? ''),
-        webhookUrl: String(req.body?.webhookUrl ?? ''),
+        telegramBotToken: String(req.body?.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || ''),
+        telegramChatId: String(req.body?.telegramChatId || process.env.TELEGRAM_CHAT_ID || ''),
+        webhookUrl: String(req.body?.webhookUrl || process.env.ALERT_WEBHOOK_URL || ''),
       });
       res.json(result);
     } catch (err) {
@@ -1192,6 +1434,7 @@ async function startServer() {
             'User-Agent': 'PearlAiAnalyst',
             Accept: 'application/vnd.github+json',
           },
+          signal: AbortSignal.timeout(7000),
         }
       );
 
@@ -1245,7 +1488,11 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

@@ -1,10 +1,13 @@
-import { OhlcCandle } from '../src/types';
+import { OhlcCandle, SafeTradeStatus } from '../src/types';
+import { DepthLevel } from './technicalAnalysis';
 
 // Публичный API биржи SafeTrade (Peatio v2). Ключи не нужны.
 const BASE_URL = 'https://safe.trade/api/v2/peatio/public/markets/pearlusdt';
-const REQUEST_TIMEOUT_MS = 8000;
+const REQUEST_TIMEOUT_MS = 6500;
 
 export interface SafeTradeData {
+  status: SafeTradeStatus;
+  httpStatus?: number;
   lastPrice: number | null;
   changePercent: number | null;
   high24h: number | null;
@@ -15,14 +18,27 @@ export interface SafeTradeData {
   spreadPercent: number | null;
   bidVolume: number | null;
   askVolume: number | null;
+  bids: DepthLevel[];
+  asks: DepthLevel[];
   candles15m: OhlcCandle[];
   candles1h: OhlcCandle[];
 }
 
 function num(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
-  const n = typeof value === 'number' ? value : parseFloat(String(value).replace('%', '').replace('+', ''));
+  const n =
+    typeof value === 'number'
+      ? value
+      : parseFloat(String(value).replace('%', '').replace('+', ''));
   return Number.isFinite(n) ? n : null;
+}
+
+class HttpStatusError extends Error {
+  public readonly status: number;
+  constructor(status: number) {
+    super(`SafeTrade HTTP ${status}`);
+    this.status = status;
+  }
 }
 
 async function getJson(path: string): Promise<unknown> {
@@ -35,7 +51,7 @@ async function getJson(path: string): Promise<unknown> {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(`SafeTrade HTTP ${response.status}`);
+    throw new HttpStatusError(response.status);
   }
   return response.json();
 }
@@ -71,30 +87,43 @@ function parseDepth(raw: unknown): {
   bestAsk: number | null;
   bidVolume: number | null;
   askVolume: number | null;
+  bids: DepthLevel[];
+  asks: DepthLevel[];
 } {
   const data = (raw ?? {}) as { bids?: unknown; asks?: unknown };
-  const toLevels = (side: unknown): Array<{ price: number; amount: number }> =>
+  const toLevels = (side: unknown): DepthLevel[] =>
     Array.isArray(side)
       ? side
           .map((lvl) => ({
             price: Array.isArray(lvl) ? num(lvl[0]) : null,
             amount: Array.isArray(lvl) ? num(lvl[1]) : null,
           }))
-          .filter((l): l is { price: number; amount: number } => l.price !== null && l.amount !== null)
+          .filter(
+            (l): l is DepthLevel =>
+              l.price !== null && l.amount !== null && l.price > 0 && l.amount > 0
+          )
       : [];
 
-  const bids = toLevels(data.bids).sort((a, b) => b.price - a.price).slice(0, 20);
-  const asks = toLevels(data.asks).sort((a, b) => a.price - b.price).slice(0, 20);
+  const bids = toLevels(data.bids).sort((a, b) => b.price - a.price).slice(0, 50);
+  const asks = toLevels(data.asks).sort((a, b) => a.price - b.price).slice(0, 50);
+  const topBids = bids.slice(0, 20);
+  const topAsks = asks.slice(0, 20);
   return {
     bestBid: bids[0]?.price ?? null,
     bestAsk: asks[0]?.price ?? null,
-    bidVolume: bids.length > 0 ? bids.reduce((s, l) => s + l.amount, 0) : null,
-    askVolume: asks.length > 0 ? asks.reduce((s, l) => s + l.amount, 0) : null,
+    bidVolume: topBids.length > 0 ? topBids.reduce((s, l) => s + l.amount, 0) : null,
+    askVolume: topAsks.length > 0 ? topAsks.reduce((s, l) => s + l.amount, 0) : null,
+    bids,
+    asks,
   };
 }
 
 // Объём в USDT: определяем, какое из полей amount/volume — это объём в котируемой валюте.
-function pickQuoteVolume(amount: number | null, volume: number | null, last: number | null): number | null {
+function pickQuoteVolume(
+  amount: number | null,
+  volume: number | null,
+  last: number | null
+): number | null {
   if (last && amount && volume) {
     if (Math.abs(volume / amount - last) / last < 0.5) return volume;
     if (Math.abs(amount / volume - last) / last < 0.5) return amount;
@@ -104,7 +133,7 @@ function pickQuoteVolume(amount: number | null, volume: number | null, last: num
   return null;
 }
 
-export async function fetchSafeTradeData(): Promise<SafeTradeData | null> {
+export async function fetchSafeTradeData(): Promise<SafeTradeData> {
   const [tickerRes, c15Res, c60Res, depthRes] = await Promise.allSettled([
     getJson('/tickers'),
     getJson('/k-line?period=15&limit=96'),
@@ -112,7 +141,12 @@ export async function fetchSafeTradeData(): Promise<SafeTradeData | null> {
     getJson('/depth'),
   ]);
 
-  const tickerRoot = tickerRes.status === 'fulfilled' ? (tickerRes.value as Record<string, any>) : null;
+  const rejectedStatuses = [tickerRes, c15Res, c60Res, depthRes]
+    .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+    .map((r) => (r.reason instanceof HttpStatusError ? r.reason.status : 0));
+
+  const tickerRoot =
+    tickerRes.status === 'fulfilled' ? (tickerRes.value as Record<string, any>) : null;
   const t = (tickerRoot?.ticker ?? tickerRoot ?? {}) as Record<string, unknown>;
   const candles15m = c15Res.status === 'fulfilled' ? parseCandles(c15Res.value) : [];
   const candles1h = c60Res.status === 'fulfilled' ? parseCandles(c60Res.value) : [];
@@ -121,7 +155,25 @@ export async function fetchSafeTradeData(): Promise<SafeTradeData | null> {
   const lastFromTicker = num(t.last);
   const lastPrice = lastFromTicker ?? candles15m[candles15m.length - 1]?.close ?? null;
   if (!lastPrice && candles15m.length === 0) {
-    return null;
+    const blocked = rejectedStatuses.includes(403);
+    return {
+      status: blocked ? 'blocked_403' : 'unavailable',
+      httpStatus: blocked ? 403 : rejectedStatuses.find((s) => s > 0),
+      lastPrice: null,
+      changePercent: null,
+      high24h: null,
+      low24h: null,
+      volumeQuote24h: null,
+      bestBid: null,
+      bestAsk: null,
+      spreadPercent: null,
+      bidVolume: null,
+      askVolume: null,
+      bids: [],
+      asks: [],
+      candles15m: [],
+      candles1h: [],
+    };
   }
 
   const open = num(t.open);
@@ -136,7 +188,6 @@ export async function fetchSafeTradeData(): Promise<SafeTradeData | null> {
       ? ((bestAsk - bestBid) / ((bestAsk + bestBid) / 2)) * 100
       : null;
 
-  // Если тикер не вернул максимум/минимум, считаем по свечам последних 24 часов.
   const dayCandles = candles15m.slice(-96);
   const high24h =
     num(t.high) ?? (dayCandles.length > 0 ? Math.max(...dayCandles.map((c) => c.high)) : null);
@@ -144,6 +195,8 @@ export async function fetchSafeTradeData(): Promise<SafeTradeData | null> {
     num(t.low) ?? (dayCandles.length > 0 ? Math.min(...dayCandles.map((c) => c.low)) : null);
 
   return {
+    status: 'direct',
+    httpStatus: 200,
     lastPrice,
     changePercent,
     high24h,
@@ -154,30 +207,46 @@ export async function fetchSafeTradeData(): Promise<SafeTradeData | null> {
     spreadPercent,
     bidVolume: depth?.bidVolume ?? null,
     askVolume: depth?.askVolume ?? null,
+    bids: depth?.bids ?? [],
+    asks: depth?.asks ?? [],
     candles15m,
     candles1h,
   };
 }
 
+export async function fetchSafeTradeCandlesInRange(
+  fromUtcMs: number,
+  toUtcMs: number,
+  periodMinutes: 1 | 5 | 15 = 5
+): Promise<OhlcCandle[]> {
+  try {
+    const fromSec = Math.floor(fromUtcMs / 1000);
+    const toSec = Math.floor(toUtcMs / 1000);
+    const raw = await getJson(
+      `/k-line?period=${periodMinutes}&time_from=${fromSec}&time_to=${toSec}`
+    );
+    return parseCandles(raw);
+  } catch {
+    return [];
+  }
+}
+
 // Цена на бирже около заданного момента (для проверки прошлых прогнозов).
 export async function fetchSafeTradePriceNearTime(targetUtcMs: number): Promise<number | null> {
-  try {
-    const fromSec = Math.floor((targetUtcMs - 40 * 60 * 1000) / 1000);
-    const toSec = Math.floor((targetUtcMs + 40 * 60 * 1000) / 1000);
-    const raw = await getJson(`/k-line?period=1&time_from=${fromSec}&time_to=${toSec}`);
-    const candles = parseCandles(raw);
-    if (candles.length === 0) return null;
-    let best: OhlcCandle | null = null;
-    let bestDiff = Number.MAX_SAFE_INTEGER;
-    for (const c of candles) {
-      const diff = Math.abs(c.timestamp - targetUtcMs);
-      if (diff < bestDiff && c.close > 0) {
-        bestDiff = diff;
-        best = c;
-      }
+  const candles = await fetchSafeTradeCandlesInRange(
+    targetUtcMs - 40 * 60 * 1000,
+    targetUtcMs + 40 * 60 * 1000,
+    1
+  );
+  if (candles.length === 0) return null;
+  let best: OhlcCandle | null = null;
+  let bestDiff = Number.MAX_SAFE_INTEGER;
+  for (const c of candles) {
+    const diff = Math.abs(c.timestamp - targetUtcMs);
+    if (diff < bestDiff && c.close > 0) {
+      bestDiff = diff;
+      best = c;
     }
-    return best ? best.close : null;
-  } catch {
-    return null;
   }
+  return best ? best.close : null;
 }

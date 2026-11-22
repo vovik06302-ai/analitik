@@ -7,6 +7,7 @@ import {
   DEFAULT_GEMINI_MODELS,
   DEFAULT_NEWS_KEYWORDS,
   DEFAULT_RSS_FEEDS,
+  ForecastHorizonHours,
   ProviderStatus,
   ServiceConnectionState,
 } from '../types';
@@ -125,7 +126,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSave = () => {
     const clampedInterval = Math.max(1, Math.min(1440, Number(draft.autoIntervalMinutes) || 15));
-    const clampedThreshold = Math.max(0, Math.min(100, Number(draft.notifyConfidenceThreshold) || 70));
+    const clampedThreshold = Math.max(
+      0,
+      Math.min(100, Number(draft.notifyConfidenceThreshold) || 70)
+    );
     const next: AppSettings = {
       ...draft,
       autoIntervalMinutes: clampedInterval,
@@ -161,7 +165,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <div className="space-y-3.5 pb-6">
-      {/* Capture & Schedule */}
+      {/* Capture, Horizon & Schedule */}
       <div className="bg-[#151D2E] border border-[#25324D] rounded-[14px] p-[18px] animate-card-enter">
         <h3 className="text-[15.5px] font-bold text-[#00D4AA] mb-3.5">
           {t(lang, 'SettingsSectionCapture')}
@@ -192,17 +196,57 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           />
           <span>
             {lang === 'en'
-              ? 'Take data from the SafeTrade exchange (no screenshot needed)'
-              : 'Брать данные с биржи SafeTrade (скриншот не нужен)'}
+              ? 'Use live exchange telemetry (SafeTrade → Gate.io + Coinbase/Kraken)'
+              : 'Брать живые данные с бирж (SafeTrade → Gate.io + сверка Coinbase/Kraken)'}
           </span>
         </label>
-        <div className="text-[11.5px] text-[#94A3B8] mb-3 ml-[26px]">
+        <div className="text-[11.5px] text-[#94A3B8] mb-3.5 ml-[26px]">
           {lang === 'en'
-            ? 'Candles, price, volume and order book come straight from the exchange API. Turn off to analyze a screenshot instead.'
-            : 'Свечи, цена, объём и стакан берутся напрямую с биржи. Выключите, чтобы анализировать скриншот графика.'}
+            ? 'Candles (15m/1h/4h/1d), order book bands, trade flow CVD, technical indicators and BTC/ETH macro context load automatically. Turn off to analyze a chart screenshot instead.'
+            : 'Свечи (15м/1ч/4ч/1д), стакан по коридорам, CVD сделок, индикаторы и макро BTC/ETH загружаются автоматически. Выключите, чтобы анализировать скриншот графика.'}
         </div>
 
-        <label className="flex items-center gap-2.5 text-[13px] text-[#F1F5F9] cursor-pointer mb-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
+          <div>
+            <div className="text-[12px] text-[#94A3B8] mb-1.5">
+              {t(lang, 'ForecastHorizonLabel')}
+            </div>
+            <div className="flex items-center gap-2">
+              {([1, 2, 4] as ForecastHorizonHours[]).map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  onClick={() => setDraft({ ...draft, forecastHorizonHours: h })}
+                  className={`px-3.5 py-2 rounded-[8px] text-[13px] font-semibold border cursor-pointer transition-colors ${
+                    draft.forecastHorizonHours === h
+                      ? 'bg-[#00D4AA]/15 border-[#00D4AA] text-[#00D4AA]'
+                      : 'bg-[#0E1420] border-[#25324D] text-[#94A3B8] hover:text-[#F1F5F9]'
+                  }`}
+                >
+                  {h} {lang === 'en' ? 'hour(s)' : h === 1 ? 'час' : 'часа'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[12px] text-[#94A3B8] mb-1.5">
+              {t(lang, 'SettingsIntervalLabel')}
+            </div>
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              value={draft.autoIntervalMinutes}
+              onChange={(e) =>
+                setDraft({ ...draft, autoIntervalMinutes: Number(e.target.value) || 1 })
+              }
+              className="w-[140px] bg-[#0E1420] text-[#F1F5F9] border border-[#25324D] focus:border-[#00D4AA] rounded-[8px] px-2.5 py-2 text-[13px] focus:outline-none"
+            />
+          </div>
+        </div>
+
+        <label className="flex items-center gap-2.5 text-[13px] text-[#F1F5F9] cursor-pointer">
           <input
             type="checkbox"
             checked={draft.autoModeEnabled}
@@ -211,20 +255,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           />
           <span>{t(lang, 'SettingsAutoEnabled')}</span>
         </label>
-
-        <div className="text-[12px] text-[#94A3B8] mb-1.5">
-          {t(lang, 'SettingsIntervalLabel')}
-        </div>
-        <input
-          type="number"
-          min={1}
-          max={1440}
-          value={draft.autoIntervalMinutes}
-          onChange={(e) =>
-            setDraft({ ...draft, autoIntervalMinutes: Number(e.target.value) || 1 })
-          }
-          className="w-[140px] bg-[#0E1420] text-[#F1F5F9] border border-[#25324D] focus:border-[#00D4AA] rounded-[8px] px-2.5 py-2 text-[13px] focus:outline-none"
-        />
       </div>
 
       {/* AI Provider */}
@@ -248,9 +278,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
         <select
           value={draft.provider}
-          onChange={(e) =>
-            setDraft({ ...draft, provider: e.target.value as AiProviderType })
-          }
+          onChange={(e) => setDraft({ ...draft, provider: e.target.value as AiProviderType })}
           className="w-[220px] bg-[#0E1420] text-[#F1F5F9] border border-[#25324D] focus:border-[#00D4AA] rounded-[8px] px-2.5 py-2 text-[13px] mb-3.5 focus:outline-none"
         >
           <option value={AiProviderType.Gemini}>Gemini</option>
@@ -334,9 +362,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div className="flex gap-2.5">
                 <select
                   value={
-                    availableOllamaModels.includes(draft.ollamaModel)
-                      ? draft.ollamaModel
-                      : ''
+                    availableOllamaModels.includes(draft.ollamaModel) ? draft.ollamaModel : ''
                   }
                   onChange={(e) => {
                     if (e.target.value) {
@@ -379,9 +405,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               />
             </div>
 
-            {ollamaModelsHint && (
-              <p className="text-[12px] text-[#F59E0B]">{ollamaModelsHint}</p>
-            )}
+            {ollamaModelsHint && <p className="text-[12px] text-[#F59E0B]">{ollamaModelsHint}</p>}
           </div>
         )}
 
@@ -420,7 +444,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 type="password"
                 value={draft.claudeApiKey}
                 onChange={(e) => setDraft({ ...draft, claudeApiKey: e.target.value })}
-                placeholder="sk-ant-..."
+                placeholder="sk-ant-... (или задайте ANTHROPIC_API_KEY в .env)"
                 className="w-full bg-[#0E1420] text-[#F1F5F9] border border-[#25324D] focus:border-[#00D4AA] rounded-[8px] px-2.5 py-2 text-[13px] focus:outline-none"
               />
             </div>
@@ -430,9 +454,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 {t(lang, 'SettingsClaudeModel')}
               </div>
               <select
-                value={
-                  DEFAULT_CLAUDE_MODELS.includes(draft.claudeModel) ? draft.claudeModel : ''
-                }
+                value={DEFAULT_CLAUDE_MODELS.includes(draft.claudeModel) ? draft.claudeModel : ''}
                 onChange={(e) => {
                   if (e.target.value) {
                     setDraft({ ...draft, claudeModel: e.target.value });
@@ -469,9 +491,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           {t(lang, 'SettingsSectionNews')}
         </h3>
 
-        <div className="text-[12px] text-[#94A3B8] mb-1.5">
-          {t(lang, 'KeywordsLabel')}
-        </div>
+        <div className="text-[12px] text-[#94A3B8] mb-1.5">{t(lang, 'KeywordsLabel')}</div>
         <div className="flex gap-2.5 mb-2.5">
           <input
             type="text"
@@ -509,9 +529,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
 
         <div className="flex items-center justify-between mb-1.5">
-          <div className="text-[12px] text-[#94A3B8]">
-            {t(lang, 'RssFeedsLabel')}
-          </div>
+          <div className="text-[12px] text-[#94A3B8]">{t(lang, 'RssFeedsLabel')}</div>
           <button
             type="button"
             onClick={() => setDraft({ ...draft, rssFeeds: [...DEFAULT_RSS_FEEDS] })}
@@ -557,7 +575,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </div>
 
-      {/* Notifications, Telegram/Webhook & Updates */}
+      {/* Desktop Tray, Auto-start, Notifications, Telegram/Webhook & Updates */}
       <div className="bg-[#151D2E] border border-[#25324D] rounded-[14px] p-[18px] animate-card-enter">
         <h3 className="text-[15.5px] font-bold text-[#00D4AA] mb-3.5">
           {t(lang, 'SettingsSectionNotifications')}
@@ -592,16 +610,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           className="w-[120px] bg-[#0E1420] text-[#F1F5F9] border border-[#25324D] focus:border-[#00D4AA] rounded-[8px] px-2.5 py-2 text-[13px] mb-3.5 focus:outline-none"
         />
 
-        <label className="flex items-center gap-2.5 text-[13px] text-[#F1F5F9] cursor-pointer mb-4">
+        <label className="flex items-center gap-2.5 text-[13px] text-[#F1F5F9] cursor-pointer mb-2.5">
           <input
             type="checkbox"
             checked={draft.minimizeToTrayOnClose}
-            onChange={(e) =>
-              setDraft({ ...draft, minimizeToTrayOnClose: e.target.checked })
-            }
+            onChange={(e) => setDraft({ ...draft, minimizeToTrayOnClose: e.target.checked })}
             className="w-4 h-4 accent-[#00D4AA] rounded cursor-pointer"
           />
           <span>{t(lang, 'SettingsMinimizeToTray')}</span>
+        </label>
+
+        <label className="flex items-center gap-2.5 text-[13px] text-[#F1F5F9] cursor-pointer mb-4">
+          <input
+            type="checkbox"
+            checked={draft.autoStartWithWindows}
+            onChange={(e) => setDraft({ ...draft, autoStartWithWindows: e.target.checked })}
+            className="w-4 h-4 accent-[#00D4AA] rounded cursor-pointer"
+          />
+          <span>{t(lang, 'SettingsAutoStart')}</span>
         </label>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
@@ -613,7 +639,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               type="password"
               value={draft.telegramBotToken}
               onChange={(e) => setDraft({ ...draft, telegramBotToken: e.target.value })}
-              placeholder="123456:ABC-DEF..."
+              placeholder="123456:ABC-DEF... (или TELEGRAM_BOT_TOKEN в .env)"
               className="w-full bg-[#0E1420] text-[#F1F5F9] border border-[#25324D] focus:border-[#00D4AA] rounded-[8px] px-2.5 py-2 text-[13px] focus:outline-none"
             />
           </div>
@@ -632,9 +658,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
 
         <div className="mb-3.5">
-          <div className="text-[12px] text-[#94A3B8] mb-1.5">
-            {t(lang, 'WebhookUrlLabel')}
-          </div>
+          <div className="text-[12px] text-[#94A3B8] mb-1.5">{t(lang, 'WebhookUrlLabel')}</div>
           <div className="flex flex-wrap gap-2.5">
             <input
               type="url"
@@ -654,9 +678,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
-        <div className="text-[12px] text-[#94A3B8] mb-1.5">
-          {t(lang, 'SettingsLanguage')}
-        </div>
+        <div className="text-[12px] text-[#94A3B8] mb-1.5">{t(lang, 'SettingsLanguage')}</div>
         <select
           value={draft.language}
           onChange={(e) =>

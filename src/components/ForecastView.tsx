@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   Eye,
   RefreshCw,
   ShieldAlert,
@@ -73,7 +74,7 @@ const DirectionArrowSvg: React.FC<{ direction: ForecastDirection; color: string 
 
 const OhlcSparkline: React.FC<{ market: MarketSnapshot }> = ({ market }) => {
   const geometry = useMemo(() => {
-    const candles = market.ohlc;
+    const candles = market.ohlc.slice(-64);
     if (!candles || candles.length < 2) return null;
 
     const width = 260;
@@ -85,8 +86,7 @@ const OhlcSparkline: React.FC<{ market: MarketSnapshot }> = ({ market }) => {
     const maxP = Math.max(...highs);
     const range = maxP - minP || minP * 0.01 || 0.0001;
 
-    const toY = (p: number) =>
-      padY + (1 - (p - minP) / range) * (height - padY * 2);
+    const toY = (p: number) => padY + (1 - (p - minP) / range) * (height - padY * 2);
 
     const stepX = width / candles.length;
     const linePts = candles
@@ -176,7 +176,9 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
     const resistanceLabel = lang === 'en' ? 'Resistance' : 'Сопротивление';
     const targetLabel = lang === 'en' ? 'Target' : 'Цель';
     const stopLabel = lang === 'en' ? 'Stop' : 'Стоп';
-    forecast.support.slice(0, 2).forEach((v) => list.push({ label: supportLabel, value: v, color: '#38BDF8' }));
+    forecast.support
+      .slice(0, 2)
+      .forEach((v) => list.push({ label: supportLabel, value: v, color: '#38BDF8' }));
     forecast.resistance
       .slice(0, 2)
       .forEach((v) => list.push({ label: resistanceLabel, value: v, color: '#F59E0B' }));
@@ -197,7 +199,6 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
     }
   };
 
-  // Compute normalized HUD overlay lines when forecast has numeric levels
   const hudLevels = useMemo(() => {
     if (!forecast || !showLevelsHud) return [];
     const items: Array<{ label: string; value: number; color: string }> = [];
@@ -230,6 +231,15 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
     });
   }, [forecast, market?.priceUsd, showLevelsHud, lang]);
 
+  const trendBadgeColor = (tr: 'bullish' | 'bearish' | 'neutral') => {
+    if (tr === 'bullish') return 'bg-[#22C55E]/15 text-[#22C55E] border-[#22C55E]/35';
+    if (tr === 'bearish') return 'bg-[#EF4444]/15 text-[#EF4444] border-[#EF4444]/35';
+    return 'bg-[#64748B]/15 text-[#94A3B8] border-[#334155]';
+  };
+
+  const ti = market?.technicalIndicators;
+  const macro = market?.macroContext;
+
   return (
     <div className="space-y-3.5 pb-6">
       {/* Constant Financial Disclaimer */}
@@ -243,14 +253,59 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
       {/* Live PEARL/USDT Market Card */}
       <div className="bg-[#151D2E] border border-[#25324D] rounded-[14px] p-4 animate-card-enter">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Activity className="w-4 h-4 text-[#00D4AA]" />
             <h3 className="text-[14px] font-bold text-[#F1F5F9]">
               {t(lang, 'MarketLiveTitle')}
             </h3>
             {market && (
-              <span className="bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5 text-[11.5px] text-[#38BDF8]">
-                {market.primaryExchange}
+              <span className="bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5 text-[11.5px] text-[#38BDF8] font-semibold">
+                {market.candlesSource ?? market.primaryExchange}
+              </span>
+            )}
+            {market?.safeTradeStatus === 'blocked_403' && (
+              <span
+                title={
+                  lang === 'en'
+                    ? 'SafeTrade direct API returned Cloudflare HTTP 403. Using Gate.io candles, order book & trades automatically.'
+                    : 'Прямой API SafeTrade вернул Cloudflare HTTP 403. Автоматически используются свечи, стакан и сделки Gate.io.'
+                }
+                className="bg-[#F59E0B]/15 border border-[#F59E0B]/40 rounded-[6px] px-2 py-0.5 text-[11px] text-[#FBBF24] font-medium"
+              >
+                {lang === 'en'
+                  ? 'SafeTrade 403 → Gate.io active'
+                  : 'SafeTrade 403 → резерв Gate.io'}
+              </span>
+            )}
+            {/* BTC & ETH Macro Context pills */}
+            {macro?.btc && (
+              <span className="bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5 text-[11px] text-[#94A3B8]">
+                BTC <strong className="text-[#F1F5F9]">${Math.round(macro.btc.priceUsd).toLocaleString()}</strong>{' '}
+                {macro.btc.change1hPercent !== null && (
+                  <span
+                    className={
+                      macro.btc.change1hPercent >= 0 ? 'text-[#22C55E]' : 'text-[#EF4444]'
+                    }
+                  >
+                    1h:{macro.btc.change1hPercent >= 0 ? '+' : ''}
+                    {macro.btc.change1hPercent}%
+                  </span>
+                )}
+              </span>
+            )}
+            {macro?.eth && (
+              <span className="bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5 text-[11px] text-[#94A3B8]">
+                ETH <strong className="text-[#F1F5F9]">${Math.round(macro.eth.priceUsd).toLocaleString()}</strong>{' '}
+                {macro.eth.change1hPercent !== null && (
+                  <span
+                    className={
+                      macro.eth.change1hPercent >= 0 ? 'text-[#22C55E]' : 'text-[#EF4444]'
+                    }
+                  >
+                    1h:{macro.eth.change1hPercent >= 0 ? '+' : ''}
+                    {macro.eth.change1hPercent}%
+                  </span>
+                )}
               </span>
             )}
           </div>
@@ -309,7 +364,7 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
                 </div>
                 <div className="text-[11px] text-[#64748B] mt-0.5">
                   {t(lang, 'MarketSpread')}:{' '}
-                  {market.spreadPercent !== null ? `${market.spreadPercent.toFixed(2)}%` : noData}
+                  {market.spreadPercent !== null ? `${market.spreadPercent.toFixed(3)}%` : noData}
                 </div>
               </div>
 
@@ -327,12 +382,129 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
 
               <div className="col-span-2 bg-[#0E1420] border border-[#25324D] rounded-[10px] px-3 py-2">
                 <div className="flex items-center justify-between text-[11px] text-[#94A3B8] mb-1">
-                  <span>{lang === 'en' ? '24h OHLC Candles (30m)' : 'Свечи OHLC 24ч (30м)'}</span>
+                  <span>
+                    {lang === 'en'
+                      ? `24h OHLC Candles (${market.ohlcPeriodMinutes ?? 30}m)`
+                      : `Свечи OHLC 24ч (${market.ohlcPeriodMinutes ?? 30}м)`}
+                  </span>
                   <span>{market.ohlc.length} pts</span>
                 </div>
                 <OhlcSparkline market={market} />
               </div>
             </div>
+
+            {/* Server-Calculated Technical Indicators & Microstructure Strip */}
+            {(ti || market.orderBook || market.tradeFlow) && (
+              <div className="bg-[#0E1420] border border-[#25324D] rounded-[10px] p-3 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#00D4AA]">
+                    <BarChart3 className="w-3.5 h-3.5" />
+                    <span>
+                      {lang === 'en'
+                        ? 'Server Technical Indicators & Order Flow'
+                        : 'Расчётные индикаторы и микроструктура рынка'}
+                    </span>
+                  </div>
+                  {ti && ti.multiTimeframe.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {ti.multiTimeframe.map((tf) => (
+                        <span
+                          key={tf.timeframe}
+                          className={`border rounded-[6px] px-2 py-0.5 text-[11px] font-semibold ${trendBadgeColor(
+                            tf.trend
+                          )}`}
+                        >
+                          {tf.timeframe}: {tf.trend === 'bullish' ? '↑' : tf.trend === 'bearish' ? '↓' : '→'}
+                          {tf.rsi14 !== null ? ` RSI ${Math.round(tf.rsi14)}` : ''}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2 text-[11.5px]">
+                  {ti && (
+                    <>
+                      <div className="bg-[#151D2E] border border-[#25324D] rounded-[8px] px-2.5 py-1.5">
+                        <div className="text-[#64748B]">RSI(14) / Struct</div>
+                        <div className="text-[#F1F5F9] font-semibold mt-0.5">
+                          {ti.rsi14 ?? noData} • {ti.structure}
+                          {ti.rsiDivergence !== 'none' && (
+                            <span className="text-[#F59E0B] ml-1">({ti.rsiDivergence} div)</span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="bg-[#151D2E] border border-[#25324D] rounded-[8px] px-2.5 py-1.5">
+                        <div className="text-[#64748B]">EMA 9 / 21 / VWAP</div>
+                        <div className="text-[#F1F5F9] font-semibold mt-0.5 truncate">
+                          {ti.ema9 !== null ? formatPrice(ti.ema9, '-') : '-'} /{' '}
+                          {ti.ema21 !== null ? formatPrice(ti.ema21, '-') : '-'} /{' '}
+                          {ti.vwap !== null ? formatPrice(ti.vwap, '-') : '-'}
+                        </div>
+                      </div>
+
+                      <div className="bg-[#151D2E] border border-[#25324D] rounded-[8px] px-2.5 py-1.5">
+                        <div className="text-[#64748B]">ATR(14) / BB Squeeze</div>
+                        <div className="text-[#F1F5F9] font-semibold mt-0.5">
+                          {ti.atrPercent !== null ? `${ti.atrPercent}%` : noData} •{' '}
+                          <span className={ti.bollinger.squeeze ? 'text-[#F59E0B]' : 'text-[#94A3B8]'}>
+                            {ti.bollinger.squeeze
+                              ? lang === 'en'
+                                ? 'Squeeze'
+                                : 'Сжатие'
+                              : `BW ${ti.bollinger.bandwidthPercent ?? '-'}%`}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="bg-[#151D2E] border border-[#25324D] rounded-[8px] px-2.5 py-1.5">
+                        <div className="text-[#64748B]">MACD Hist / Vol×</div>
+                        <div className="text-[#F1F5F9] font-semibold mt-0.5">
+                          <span
+                            className={
+                              (ti.macd.histogram ?? 0) >= 0 ? 'text-[#22C55E]' : 'text-[#EF4444]'
+                            }
+                          >
+                            {ti.macd.histogram !== null ? ti.macd.histogram.toFixed(5) : noData}
+                          </span>{' '}
+                          • {ti.volumeRatio !== null ? `${ti.volumeRatio}×` : '-'}
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {market.orderBook?.bands && market.orderBook.bands.length > 0 && (
+                    <div className="bg-[#151D2E] border border-[#25324D] rounded-[8px] px-2.5 py-1.5">
+                      <div className="text-[#64748B]">
+                        {lang === 'en' ? 'Book OBI (±0.5/1/2%)' : 'Стакан (±0.5/1/2%)'}
+                      </div>
+                      <div className="text-[#F1F5F9] font-semibold mt-0.5">
+                        {market.orderBook.bands.map((b) => `${Math.round(b.bidSharePercent)}%`).join(' / ')}{' '}
+                        <span className="text-[#64748B] font-normal">bids</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {market.tradeFlow && (
+                    <div className="bg-[#151D2E] border border-[#25324D] rounded-[8px] px-2.5 py-1.5">
+                      <div className="text-[#64748B]">
+                        CVD ({market.tradeFlow.windowMinutes}m)
+                      </div>
+                      <div
+                        className={`font-semibold mt-0.5 ${
+                          market.tradeFlow.cvd >= 0 ? 'text-[#22C55E]' : 'text-[#EF4444]'
+                        }`}
+                      >
+                        {market.tradeFlow.cvd >= 0 ? '+' : ''}
+                        {formatCompactUsd(Math.abs(market.tradeFlow.cvd), '$0')} (
+                        {market.tradeFlow.buySharePercent}% buy)
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Anomalies & Cross-Exchange Tickers */}
             {(market.anomalies.length > 0 || market.tickers.length > 0) && (
@@ -361,7 +533,9 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
           </div>
         ) : (
           <div className="text-[12.5px] text-[#64748B]">
-            {lang === 'en' ? 'Loading live PEARL/USDT telemetry...' : 'Загрузка живых данных PEARL/USDT...'}
+            {lang === 'en'
+              ? 'Loading live PEARL/USDT telemetry...'
+              : 'Загрузка живых данных PEARL/USDT...'}
           </div>
         )}
       </div>
@@ -381,6 +555,18 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
         </div>
       ) : (
         <>
+          {/* Fallback or Guardrail Warning Banner */}
+          {(forecast.fallbackNotice || (forecast.guardrailWarnings && forecast.guardrailWarnings.length > 0)) && (
+            <div className="bg-[#F59E0B]/10 border border-[#F59E0B]/40 rounded-[10px] px-3.5 py-2.5 text-[12.5px] text-[#FCD34D] space-y-1">
+              {forecast.fallbackNotice && (
+                <div className="font-semibold">⚡ {forecast.fallbackNotice}</div>
+              )}
+              {forecast.guardrailWarnings?.map((w, idx) => (
+                <div key={idx}>• {w}</div>
+              ))}
+            </div>
+          )}
+
           {/* Hero Forecast Card */}
           <div className="bg-[#151D2E] border border-[#25324D] rounded-[14px] p-[18px] animate-card-enter">
             <div className="flex flex-col lg:flex-row lg:items-center gap-5">
@@ -404,8 +590,19 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
 
               {/* Direction Title, Price, Confidence Bar */}
               <div className="flex-1 min-w-0">
-                <div className="text-[12px] text-[#94A3B8]">{t(lang, 'LabelDirection')}</div>
-                <div className="flex flex-wrap items-center gap-5 mt-0.5 mb-2.5">
+                <div className="flex flex-wrap items-center gap-2 text-[12px] text-[#94A3B8]">
+                  <span>{t(lang, 'LabelDirection')}</span>
+                  <span className="bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5 text-[11px] font-semibold text-[#38BDF8]">
+                    {t(lang, 'ForecastHorizonLabel')}: {forecast.horizonHours ?? 4}
+                    {lang === 'en' ? 'h' : 'ч'}
+                  </span>
+                  {forecast.riskRewardRatio != null && (
+                    <span className="bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5 text-[11px] font-semibold text-[#00D4AA]">
+                      R:R {forecast.riskRewardRatio}:1
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-5 mt-1 mb-2.5">
                   <span
                     className="text-[30px] font-bold leading-none"
                     style={{ color: getDirectionColor(forecast.direction) }}
@@ -510,7 +707,14 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
                         </span>
                       )}
                     </div>
-                    <div className="text-[11px] text-[#64748B] truncate mb-1">{vote.model}</div>
+                    <div className="flex items-center justify-between text-[11px] text-[#64748B] mb-1">
+                      <span className="truncate">{vote.model}</span>
+                      {vote.historicalWinRate != null && (
+                        <span className="text-[#38BDF8] shrink-0 ml-1">
+                          WR {vote.historicalWinRate}%
+                        </span>
+                      )}
+                    </div>
                     {vote.error ? (
                       <div className="text-[11px] text-[#FCA5A5] truncate" title={vote.error}>
                         {vote.error}
@@ -621,7 +825,7 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
         </>
       )}
 
-      {/* Last Screenshot Preview Card + Visual Levels HUD Overlay */}
+      {/* Chart / Last Screenshot Preview Card */}
       <div
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
@@ -632,7 +836,7 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
             <span className="text-[14.5px] font-semibold text-[#F1F5F9]">
               {t(lang, 'LabelLastScreenshot')}
             </span>
-            {screenshotLabel && (
+            {!useExchangeData && screenshotLabel && (
               <span className="text-[11.5px] text-[#94A3B8] bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5">
                 {screenshotLabel}
               </span>
@@ -640,7 +844,7 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 text-[11.5px]">
-            {forecast && screenshotDataUrl && (
+            {forecast && screenshotDataUrl && !useExchangeData && (
               <button
                 type="button"
                 onClick={() => setShowLevelsHud((prev) => !prev)}
@@ -654,14 +858,16 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
                 <span>{t(lang, 'HudToggleLabel')}</span>
               </button>
             )}
-            <span className="bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5 text-[#94A3B8]">
-              {t(lang, 'LabelScreenshotTime')}:{' '}
-              <strong className="text-[#F1F5F9]">
-                {screenshotCapturedAt
-                  ? formatLocalDateTime(screenshotCapturedAt)
-                  : t(lang, 'ScreenshotNotTaken')}
-              </strong>
-            </span>
+            {!useExchangeData && (
+              <span className="bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5 text-[#94A3B8]">
+                {t(lang, 'LabelScreenshotTime')}:{' '}
+                <strong className="text-[#F1F5F9]">
+                  {screenshotCapturedAt
+                    ? formatLocalDateTime(screenshotCapturedAt)
+                    : t(lang, 'ScreenshotNotTaken')}
+                </strong>
+              </span>
+            )}
             <span className="bg-[#0E1420] border border-[#25324D] rounded-[6px] px-2 py-0.5 text-[#94A3B8]">
               {t(lang, 'LabelUpdatePeriod')}:{' '}
               <strong className="text-[#00D4AA]">
@@ -691,66 +897,64 @@ export const ForecastView: React.FC<ForecastViewProps> = ({
                 />
                 <div className="text-[11.5px] text-[#94A3B8] mt-1.5">
                   {lang === 'en'
-                    ? `Data: ${market.primaryExchange} • candles ${market.ohlcPeriodMinutes ?? 30}m • updated ${formatLocalDateTime(market.fetchedAtUtc)}`
-                    : `Данные: ${market.primaryExchange} • свечи ${market.ohlcPeriodMinutes ?? 30} мин • обновлено ${formatLocalDateTime(market.fetchedAtUtc)}`}
+                    ? `Candles source: ${market.candlesSource ?? market.primaryExchange} • ${market.ohlcPeriodMinutes ?? 30}m • updated ${formatLocalDateTime(market.fetchedAtUtc)}`
+                    : `Источник свечей: ${market.candlesSource ?? market.primaryExchange} • ${market.ohlcPeriodMinutes ?? 30} мин • обновлено ${formatLocalDateTime(market.fetchedAtUtc)}`}
                 </div>
               </>
             ) : (
               <div className="py-10 text-center text-[#64748B] text-[13px]">
-                {lang === 'en'
-                  ? 'Waiting for exchange data...'
-                  : 'Ожидание данных с биржи...'}
+                {lang === 'en' ? 'Waiting for exchange data...' : 'Ожидание данных с биржи...'}
               </div>
             )}
           </div>
         ) : (
-        <button
-          type="button"
-          onClick={onOpenRegionModal}
-          className="relative w-full bg-[#0A0E17] border border-[#25324D] hover:border-[#384E75] rounded-[10px] min-h-[180px] max-h-[340px] flex items-center justify-center overflow-hidden cursor-pointer transition-colors"
-        >
-          {screenshotDataUrl ? (
-            <>
-              <img
-                src={screenshotDataUrl}
-                alt="PEARL/USDT Chart"
-                className="max-h-[336px] w-auto object-contain"
-              />
-              {hudLevels.length > 0 && (
-                <div className="absolute inset-0 pointer-events-none">
-                  {hudLevels.map((lvl, idx) => (
-                    <div
-                      key={`${lvl.label}-${idx}`}
-                      className="absolute left-0 right-0 flex items-center"
-                      style={{ top: `${lvl.topPct}%` }}
-                    >
+          <button
+            type="button"
+            onClick={onOpenRegionModal}
+            className="relative w-full bg-[#0A0E17] border border-[#25324D] hover:border-[#384E75] rounded-[10px] min-h-[180px] max-h-[340px] flex items-center justify-center overflow-hidden cursor-pointer transition-colors"
+          >
+            {screenshotDataUrl ? (
+              <>
+                <img
+                  src={screenshotDataUrl}
+                  alt="PEARL/USDT Chart"
+                  className="max-h-[336px] w-auto object-contain"
+                />
+                {hudLevels.length > 0 && (
+                  <div className="absolute inset-0 pointer-events-none">
+                    {hudLevels.map((lvl, idx) => (
                       <div
-                        className="w-full border-t border-dashed opacity-75"
-                        style={{ borderColor: lvl.color }}
-                      />
-                      <span
-                        className="absolute right-2 -translate-y-1/2 bg-[#0A0E17]/90 border px-1.5 py-0.5 rounded text-[10.5px] font-semibold whitespace-nowrap"
-                        style={{ borderColor: lvl.color, color: lvl.color }}
+                        key={`${lvl.label}-${idx}`}
+                        className="absolute left-0 right-0 flex items-center"
+                        style={{ top: `${lvl.topPct}%` }}
                       >
-                        {lvl.label}: {formatPrice(lvl.value, noData)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="flex flex-col items-center gap-2 py-8 px-4 text-center">
-              <Upload className="w-6 h-6 text-[#64748B]" />
-              <span className="text-[#64748B] text-[13px]">{t(lang, 'NoData')}</span>
-              <span className="text-[#94A3B8] text-[12px]">
-                {lang === 'en'
-                  ? 'Click here to select screen region, upload chart image, or press Ctrl+V'
-                  : 'Нажмите, чтобы выбрать область экрана, загрузить скриншот или вставьте через Ctrl+V'}
-              </span>
-            </div>
-          )}
-        </button>
+                        <div
+                          className="w-full border-t border-dashed opacity-75"
+                          style={{ borderColor: lvl.color }}
+                        />
+                        <span
+                          className="absolute right-2 -translate-y-1/2 bg-[#0A0E17]/90 border px-1.5 py-0.5 rounded text-[10.5px] font-semibold whitespace-nowrap"
+                          style={{ borderColor: lvl.color, color: lvl.color }}
+                        >
+                          {lvl.label}: {formatPrice(lvl.value, noData)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex flex-col items-center gap-2 py-8 px-4 text-center">
+                <Upload className="w-6 h-6 text-[#64748B]" />
+                <span className="text-[#64748B] text-[13px]">{t(lang, 'NoData')}</span>
+                <span className="text-[#94A3B8] text-[12px]">
+                  {lang === 'en'
+                    ? 'Click here to select screen region, upload chart image, or press Ctrl+V'
+                    : 'Нажмите, чтобы выбрать область экрана, загрузить скриншот или вставьте через Ctrl+V'}
+                </span>
+              </div>
+            )}
+          </button>
         )}
       </div>
     </div>

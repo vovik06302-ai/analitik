@@ -4,6 +4,8 @@ const {
   app,
   BrowserWindow,
   Menu,
+  Tray,
+  nativeImage,
   shell,
   dialog,
   session,
@@ -30,7 +32,13 @@ if (SMOKE) {
 }
 
 let mainWindow = null;
+let tray = null;
+let isQuitting = false;
 let serverOrigin = '';
+let desktopSettings = {
+  minimizeToTrayOnClose: true,
+  autoStartWithWindows: false,
+};
 
 const ENV_TEMPLATE = [
   '# Ключи и настройки Pearl AI Analyst.',
@@ -40,7 +48,166 @@ const ENV_TEMPLATE = [
   'ANTHROPIC_API_KEY=',
   'OLLAMA_URL=http://localhost:11434',
   '',
+  '# Опционально: серверные настройки уведомлений (Telegram / Webhook)',
+  'TELEGRAM_BOT_TOKEN=',
+  'TELEGRAM_CHAT_ID=',
+  'ALERT_WEBHOOK_URL=',
+  '',
 ].join('\r\n');
+
+function desktopSettingsPath() {
+  return path.join(app.getPath('userData'), 'desktop-settings.json');
+}
+
+function loadDesktopSettings() {
+  try {
+    const file = desktopSettingsPath();
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      desktopSettings = {
+        minimizeToTrayOnClose:
+          typeof parsed.minimizeToTrayOnClose === 'boolean' ? parsed.minimizeToTrayOnClose : true,
+        autoStartWithWindows:
+          typeof parsed.autoStartWithWindows === 'boolean' ? parsed.autoStartWithWindows : false,
+      };
+    }
+  } catch {
+    // Используем значения по умолчанию
+  }
+  return desktopSettings;
+}
+
+function saveDesktopSettings(next) {
+  desktopSettings = {
+    minimizeToTrayOnClose: Boolean(next && next.minimizeToTrayOnClose),
+    autoStartWithWindows: Boolean(next && next.autoStartWithWindows),
+  };
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(desktopSettingsPath(), JSON.stringify(desktopSettings, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Failed to persist desktop settings:', err);
+  }
+  applyAutoStartSetting(desktopSettings.autoStartWithWindows);
+  return desktopSettings;
+}
+
+function applyAutoStartSetting(enabled) {
+  if (SMOKE) return;
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return;
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: Boolean(enabled),
+      path: process.execPath,
+    });
+  } catch (err) {
+    console.error('Failed to update login item settings:', err);
+  }
+}
+
+function createFallbackTrayIcon() {
+  const size = 16;
+  const buf = Buffer.alloc(size * size * 4);
+  const cx = (size - 1) / 2;
+  const cy = (size - 1) / 2;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const idx = (y * size + x) * 4;
+      const dist = Math.hypot(x - cx, y - cy);
+      if (dist <= 6.8) {
+        // BGRA format for Electron nativeImage.createFromBitmap
+        const isInner = dist <= 4.2;
+        buf[idx + 0] = isInner ? 212 : 120; // B
+        buf[idx + 1] = isInner ? 182 : 95;  // G
+        buf[idx + 2] = isInner ? 6 : 15;    // R
+        buf[idx + 3] = 255;                 // A
+      } else {
+        buf[idx + 3] = 0;
+      }
+    }
+  }
+  return nativeImage.createFromBitmap(buf, { width: size, height: size });
+}
+
+function resolveTrayIcon() {
+  try {
+    const iconPath = path.join(app.getAppPath(), 'build', 'icon.png');
+    if (fs.existsSync(iconPath)) {
+      const img = nativeImage.createFromPath(iconPath);
+      if (!img.isEmpty()) {
+        return img.resize({ width: 16, height: 16 });
+      }
+    }
+  } catch {
+    // Переходим на встроенную иконку
+  }
+  return createFallbackTrayIcon();
+}
+
+function showMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function setupTray() {
+  if (SMOKE || tray) return;
+  try {
+    tray = new Tray(resolveTrayIcon());
+    tray.setToolTip('Pearl AI Analyst — PEARL/USDT');
+
+    const rebuildTrayMenu = () => {
+      const contextMenu = Menu.buildFromTemplate([
+        {
+          label: 'Открыть Pearl AI Analyst',
+          click: () => showMainWindow(),
+        },
+        {
+          label: 'Скрыть в трей',
+          click: () => {
+            if (mainWindow && mainWindow.isVisible()) mainWindow.hide();
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Изменить ключи (.env)',
+          click: openEnvFile,
+        },
+        {
+          label: 'Перезапустить приложение',
+          click: () => {
+            isQuitting = true;
+            app.relaunch();
+            app.exit(0);
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Выход',
+          click: () => {
+            isQuitting = true;
+            app.quit();
+          },
+        },
+      ]);
+      tray.setContextMenu(contextMenu);
+    };
+
+    rebuildTrayMenu();
+    tray.on('click', () => {
+      if (!mainWindow) return;
+      if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
+        mainWindow.focus();
+      } else {
+        showMainWindow();
+      }
+    });
+    tray.on('double-click', () => showMainWindow());
+  } catch (err) {
+    console.error('Failed to initialize system tray:', err);
+  }
+}
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -128,13 +295,26 @@ function buildMenu() {
         { label: 'Открыть папку с данными', click: () => shell.openPath(app.getPath('userData')) },
         { type: 'separator' },
         {
+          label: 'Свернуть в трей',
+          click: () => {
+            if (mainWindow) mainWindow.hide();
+          },
+        },
+        {
           label: 'Перезапустить приложение',
           click: () => {
+            isQuitting = true;
             app.relaunch();
             app.exit(0);
           },
         },
-        { role: 'quit', label: 'Выход' },
+        {
+          label: 'Выход',
+          click: () => {
+            isQuitting = true;
+            app.quit();
+          },
+        },
       ],
     },
     {
@@ -154,6 +334,24 @@ function buildMenu() {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
+
+ipcMain.handle('get-desktop-settings', async () => {
+  return { ...desktopSettings };
+});
+
+ipcMain.handle('set-desktop-settings', async (_event, options) => {
+  const next = saveDesktopSettings({
+    minimizeToTrayOnClose:
+      options && typeof options.minimizeToTrayOnClose === 'boolean'
+        ? options.minimizeToTrayOnClose
+        : desktopSettings.minimizeToTrayOnClose,
+    autoStartWithWindows:
+      options && typeof options.autoStartWithWindows === 'boolean'
+        ? options.autoStartWithWindows
+        : desktopSettings.autoStartWithWindows,
+  });
+  return { ok: true, settings: next };
+});
 
 let updating = false;
 
@@ -180,6 +378,7 @@ ipcMain.handle('install-update', async (_event, url) => {
     if (mainWindow) mainWindow.setProgressBar(-1);
     const openError = await shell.openPath(target);
     if (openError) throw new Error(openError);
+    isQuitting = true;
     setTimeout(() => app.quit(), 1000);
     return { ok: true };
   } catch (err) {
@@ -329,6 +528,14 @@ function createWindow() {
       if (/^https?:/i.test(url)) shell.openExternal(url);
     }
   });
+
+  mainWindow.on('close', (event) => {
+    if (!isQuitting && !SMOKE && desktopSettings.minimizeToTrayOnClose && tray) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -360,10 +567,11 @@ if (!SMOKE && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    showMainWindow();
+  });
+
+  app.on('before-quit', () => {
+    isQuitting = true;
   });
 
   app.whenReady().then(async () => {
@@ -372,10 +580,13 @@ if (!SMOKE && !app.requestSingleInstanceLock()) {
       return;
     }
     app.setAppUserModelId('com.pearl.aianalyst');
+    loadDesktopSettings();
+    applyAutoStartSetting(desktopSettings.autoStartWithWindows);
     buildMenu();
     try {
       const createdEnv = await startBackend();
       setupScreenCapture();
+      setupTray();
       createWindow();
       if (createdEnv) {
         const { response } = await dialog.showMessageBox(mainWindow, {
@@ -396,5 +607,9 @@ if (!SMOKE && !app.requestSingleInstanceLock()) {
     }
   });
 
-  app.on('window-all-closed', () => app.quit());
+  app.on('window-all-closed', () => {
+    if (isQuitting || !desktopSettings.minimizeToTrayOnClose || !tray) {
+      app.quit();
+    }
+  });
 }

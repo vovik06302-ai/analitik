@@ -94,15 +94,22 @@ function getEntryBasePrice(entry: ForecastHistoryEntry): number | null {
   return null;
 }
 
-function isDirectionCorrect(
+export function isDirectionCorrect(
   direction: ForecastDirection,
   startPrice: number,
-  endPrice: number
+  endPrice: number,
+  atrPercent?: number | null
 ): boolean {
   const relChange = (endPrice - startPrice) / startPrice;
   if (direction === ForecastDirection.Up) return endPrice > startPrice;
   if (direction === ForecastDirection.Down) return endPrice < startPrice;
-  if (direction === ForecastDirection.Sideways) return Math.abs(relChange) <= 0.005;
+  if (direction === ForecastDirection.Sideways) {
+    const adaptiveBand =
+      atrPercent && Number.isFinite(atrPercent) && atrPercent > 0
+        ? Math.max(0.005, (atrPercent / 100) * 0.5)
+        : 0.005;
+    return Math.abs(relChange) <= adaptiveBand;
+  }
   return false;
 }
 
@@ -162,7 +169,14 @@ function evaluateHorizon(
     if (!endPrice) continue;
 
     evaluable++;
-    if (isDirectionCorrect(current.direction, startPrice, endPrice)) {
+    if (
+      isDirectionCorrect(
+        current.direction,
+        startPrice,
+        endPrice,
+        current.atrPercentAtForecast
+      )
+    ) {
       correct++;
     }
   }
@@ -180,14 +194,22 @@ function evaluateHorizon(
 function evaluateCalibration(chronological: ForecastHistoryEntry[]): CalibrationStats {
   let highConfTotal = 0;
   let highConfCorrect = 0;
+  let targetHitCount = 0;
+  let stopHitCount = 0;
   const targetErrors: number[] = [];
 
   for (let i = 0; i < chronological.length; i++) {
     const entry = chronological[i];
+    if (entry.outcomeStatus === 'target_hit') targetHitCount++;
+    else if (entry.outcomeStatus === 'stop_hit') stopHitCount++;
+
     const startPrice = getEntryBasePrice(entry);
     if (!startPrice) continue;
 
+    const preferredHorizon = entry.horizonHours ?? 4;
     const endPrice =
+      (preferredHorizon === 1 ? getVerifiedEndPrice(chronological, i, 1, 30) : null) ??
+      (preferredHorizon === 2 ? getVerifiedEndPrice(chronological, i, 2, 45) : null) ??
       getVerifiedEndPrice(chronological, i, 4, 60) ??
       getVerifiedEndPrice(chronological, i, 2, 45) ??
       getVerifiedEndPrice(chronological, i, 1, 30);
@@ -196,7 +218,16 @@ function evaluateCalibration(chronological: ForecastHistoryEntry[]): Calibration
 
     if (entry.confidence >= 70) {
       highConfTotal++;
-      if (isDirectionCorrect(entry.direction, startPrice, endPrice)) {
+      if (
+        entry.outcomeStatus === 'target_hit' ||
+        (entry.outcomeStatus !== 'stop_hit' &&
+          isDirectionCorrect(
+            entry.direction,
+            startPrice,
+            endPrice,
+            entry.atrPercentAtForecast
+          ))
+      ) {
         highConfCorrect++;
       }
     }
@@ -209,6 +240,8 @@ function evaluateCalibration(chronological: ForecastHistoryEntry[]): Calibration
     }
   }
 
+  const resolvedTargetStop = targetHitCount + stopHitCount;
+
   return {
     highConfTotal,
     highConfCorrect,
@@ -218,15 +251,18 @@ function evaluateCalibration(chronological: ForecastHistoryEntry[]): Calibration
       targetErrors.length > 0
         ? Math.round((targetErrors.reduce((a, b) => a + b, 0) / targetErrors.length) * 100) / 100
         : null,
+    targetHitCount,
+    stopHitCount,
+    targetHitRate:
+      resolvedTargetStop > 0
+        ? Math.round((targetHitCount * 1000) / resolvedTargetStop) / 10
+        : null,
   };
 }
 
 export function calculateAccuracyMetrics(entries: ForecastHistoryEntry[]): AccuracyMetrics {
   const chronological = entries
-    .filter(
-      (e) =>
-        getEntryBasePrice(e) !== null && e.direction !== ForecastDirection.Unknown
-    )
+    .filter((e) => getEntryBasePrice(e) !== null && e.direction !== ForecastDirection.Unknown)
     .sort((a, b) => new Date(a.createdAtUtc).getTime() - new Date(b.createdAtUtc).getTime());
 
   return {
@@ -245,12 +281,13 @@ function escapeCsv(value: string): string {
 
 export function exportHistoryToCsv(entries: ForecastHistoryEntry[]): void {
   const header =
-    'ID;Время (локальное);Цена;Рынок (SQLite);Направление;Уверенность (%);Цель;Стоп;Факт 1ч;Факт 2ч;Факт 4ч;Поддержка;Сопротивление;Провайдер;Модель;Время ответа (мс);Причины по графику;Влияние новостей;Риски';
+    'ID;Время (локальное);Горизонт (ч);Цена;Рынок (SQLite);Направление;Уверенность (%);Цель;Стоп;Исход (Target/Stop);Факт 1ч;Факт 2ч;Факт 4ч;ATR (%);Поддержка;Сопротивление;Провайдер;Модель;Время ответа (мс);Причины по графику;Влияние новостей;Риски';
 
   const lines = entries.map((e) => {
     const row = [
       String(e.id),
       formatLocalDateTime(e.createdAtUtc),
+      e.horizonHours != null ? String(e.horizonHours) : '4',
       e.priceNow !== null && Number.isFinite(e.priceNow) ? String(e.priceNow) : 'нет данных',
       e.marketPriceAtForecast != null && Number.isFinite(e.marketPriceAtForecast)
         ? String(e.marketPriceAtForecast)
@@ -259,9 +296,11 @@ export function exportHistoryToCsv(entries: ForecastHistoryEntry[]): void {
       String(e.confidence),
       e.targetPrice !== null && Number.isFinite(e.targetPrice) ? String(e.targetPrice) : 'нет данных',
       e.stopPrice !== null && Number.isFinite(e.stopPrice) ? String(e.stopPrice) : 'нет данных',
+      e.outcomeStatus ?? 'pending',
       e.actualPrice1h != null ? String(e.actualPrice1h) : '',
       e.actualPrice2h != null ? String(e.actualPrice2h) : '',
       e.actualPrice4h != null ? String(e.actualPrice4h) : '',
+      e.atrPercentAtForecast != null ? String(e.atrPercentAtForecast) : '',
       e.supportText,
       e.resistanceText,
       e.providerName,

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Radio, Users, X } from 'lucide-react';
+import { Clock, Loader2, Play, Radio, Square, Users, X } from 'lucide-react';
 import {
   AiProviderType,
   AppSettings,
@@ -11,6 +11,7 @@ import {
   DEFAULT_SETTINGS,
   ForecastDirection,
   ForecastHistoryEntry,
+  ForecastHorizonHours,
   ForecastResult,
   MarketSnapshot,
   NewsFetchResult,
@@ -30,6 +31,11 @@ import { RegionSelectionModal } from './components/RegionSelectionModal';
 const SETTINGS_STORAGE_KEY = 'pearl_ai_settings_v2';
 const LEGACY_SETTINGS_STORAGE_KEY = 'pearl_ai_settings_v1';
 
+function normalizeHorizon(raw: unknown): ForecastHorizonHours {
+  if (raw === 1 || raw === 2 || raw === 4) return raw;
+  return 4;
+}
+
 function loadSavedSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -38,6 +44,7 @@ function loadSavedSettings(): AppSettings {
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
+        forecastHorizonHours: normalizeHorizon(parsed.forecastHorizonHours),
         captureRegion: {
           ...DEFAULT_SETTINGS.captureRegion,
           ...(parsed.captureRegion ?? {}),
@@ -56,6 +63,7 @@ function loadSavedSettings(): AppSettings {
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
+        forecastHorizonHours: normalizeHorizon(parsed.forecastHorizonHours),
         captureRegion: {
           ...DEFAULT_SETTINGS.captureRegion,
           ...(parsed.captureRegion ?? {}),
@@ -77,15 +85,24 @@ function loadSavedSettings(): AppSettings {
   }
 }
 
-interface DesktopCaptureApi {
+interface DesktopBridgeApi {
   captureScreen?: (options?: {
     silent?: boolean;
     displayId?: string;
   }) => Promise<{ ok: boolean; dataUrl?: string }>;
+  installUpdate?: (url: string) => Promise<{ ok: boolean; error?: string }>;
+  setDesktopSettings?: (opts: {
+    minimizeToTrayOnClose: boolean;
+    autoStartWithWindows: boolean;
+  }) => Promise<{ ok: boolean }>;
+  getDesktopSettings?: () => Promise<{
+    minimizeToTrayOnClose: boolean;
+    autoStartWithWindows: boolean;
+  }>;
 }
 
-function getDesktopCaptureApi(): DesktopCaptureApi | undefined {
-  return (window as unknown as { pearlDesktop?: DesktopCaptureApi }).pearlDesktop;
+function getDesktopApi(): DesktopBridgeApi | undefined {
+  return (window as unknown as { pearlDesktop?: DesktopBridgeApi }).pearlDesktop;
 }
 
 function forgetDesktopCapture(): void {
@@ -173,6 +190,20 @@ export default function App() {
 
   const lang = settings.language;
 
+  const syncDesktopSettings = useCallback((next: AppSettings) => {
+    const api = getDesktopApi();
+    if (api?.setDesktopSettings) {
+      void api.setDesktopSettings({
+        minimizeToTrayOnClose: next.minimizeToTrayOnClose,
+        autoStartWithWindows: next.autoStartWithWindows,
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    syncDesktopSettings(settingsRef.current);
+  }, [syncDesktopSettings]);
+
   const stopLiveStream = useCallback(() => {
     if (liveStreamRef.current) {
       liveStreamRef.current.getTracks().forEach((tr) => tr.stop());
@@ -216,14 +247,18 @@ export default function App() {
     };
   }, [stopLiveStream]);
 
-  const persistSettings = useCallback((next: AppSettings) => {
-    setSettings(next);
-    try {
-      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // Ignore storage quota issues
-    }
-  }, []);
+  const persistSettings = useCallback(
+    (next: AppSettings) => {
+      setSettings(next);
+      syncDesktopSettings(next);
+      try {
+        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore storage quota issues
+      }
+    },
+    [syncDesktopSettings]
+  );
 
   const refreshMarket = useCallback(async (force = false): Promise<MarketSnapshot | null> => {
     setIsLoadingMarket(true);
@@ -477,7 +512,7 @@ export default function App() {
 
   // Авто-снимок без живого потока: снимаем тот же экран и вырезаем сохранённую область.
   const captureDesktopRegion = useCallback(async (): Promise<string | null> => {
-    const api = getDesktopCaptureApi();
+    const api = getDesktopApi();
     if (!api?.captureScreen) return null;
     let displayId: string | null = null;
     try {
@@ -523,7 +558,6 @@ export default function App() {
     if (isAnalyzingRef.current) return;
     const activeSettings = settingsRef.current;
 
-    // Refresh screenshot from live stream if active
     const useExchange = activeSettings.useExchangeData;
     const liveCaptured = !useExchange && liveStreamActive ? captureFromLiveStream() : null;
     const desktopCaptured = !useExchange && !liveCaptured ? await captureDesktopRegion() : null;
@@ -538,8 +572,8 @@ export default function App() {
     try {
       setAnalysisStepText(
         activeSettings.language === 'en'
-          ? 'Fetching live market & RSS news...'
-          : 'Загрузка живого рынка PEARL и новостей...'
+          ? 'Fetching market indicators, BTC/ETH & news...'
+          : 'Загрузка рынка, индикаторов, BTC/ETH и новостей...'
       );
 
       const [latestNewsRes, latestMarketRes] = await Promise.allSettled([
@@ -556,19 +590,11 @@ export default function App() {
         setErrorBannerText(
           useExchange
             ? activeSettings.language === 'en'
-              ? 'Could not load market data from the SafeTrade exchange.'
-              : 'Не удалось загрузить данные с биржи SafeTrade.'
+              ? 'Could not load live exchange market data.'
+              : 'Не удалось загрузить рыночные данные с бирж.'
             : t(activeSettings.language, 'ErrorSelectImageFirst')
         );
         return;
-      }
-
-      if (useExchange && latestMarket && latestMarket.primaryExchange !== 'SafeTrade') {
-        setInfoBannerText(
-          activeSettings.language === 'en'
-            ? 'SafeTrade did not respond, so backup data sources were used.'
-            : 'SafeTrade не ответил, поэтому использованы запасные источники данных.'
-        );
       }
 
       const activeModel =
@@ -585,8 +611,8 @@ export default function App() {
       setAnalysisStepText(
         activeSettings.consensusMode
           ? activeSettings.language === 'en'
-            ? 'Running Multi-Model AI Council...'
-            : 'Совет ИИ (консенсус моделей)...'
+            ? `Running AI Council (${activeSettings.forecastHorizonHours}h)...`
+            : `Совет ИИ (${activeSettings.forecastHorizonHours}ч)...`
           : activeSettings.language === 'en'
           ? `Analyzing via ${activeSettings.provider} (${activeModel})...`
           : `Анализ через ${activeSettings.provider} (${activeModel})...`
@@ -603,6 +629,7 @@ export default function App() {
           ollamaModel: activeSettings.ollamaModel,
           ollamaUrl: activeSettings.ollamaUrl,
           claudeApiKey: activeSettings.claudeApiKey,
+          horizonHours: activeSettings.forecastHorizonHours,
           imageBase64: currentImage,
           news: latestNews,
           marketSnapshot: latestMarket,
@@ -644,7 +671,6 @@ export default function App() {
         result.confidence >= activeSettings.notifyConfidenceThreshold;
 
       if (
-        activeSettings.minimizeToTrayOnClose &&
         ((activeSettings.notifyOnDirectionChange && directionChanged) || aboveThreshold) &&
         typeof Notification !== 'undefined' &&
         Notification.permission === 'granted'
@@ -652,19 +678,30 @@ export default function App() {
         new Notification('Pearl AI Analyst — PEARL/USDT', {
           body: `${getDirectionLabel(result.direction, activeSettings.language)} (${
             result.confidence
-          }%) • ${formatPrice(result.priceNow, t(activeSettings.language, 'NoData'))}`,
+          }%, ${result.horizonHours ?? activeSettings.forecastHorizonHours}h) • ${formatPrice(
+            result.priceNow,
+            t(activeSettings.language, 'NoData')
+          )}`,
         });
       }
 
       lastNotifiedDirectionRef.current = result.direction;
+      const sourceNote =
+        latestMarket && latestMarket.safeTradeStatus === 'blocked_403'
+          ? activeSettings.language === 'en'
+            ? ` • Candles: ${latestMarket.candlesSource} (SafeTrade 403)`
+            : ` • Свечи: ${latestMarket.candlesSource} (SafeTrade 403)`
+          : '';
+      const fallbackNote = result.fallbackNotice ? ` • ${result.fallbackNotice}` : '';
+
       setInfoBannerText(
         activeSettings.language === 'en'
-          ? `Analysis completed in ${(result.responseTimeMs / 1000).toFixed(1)}s (${
-              result.modelName
-            }).`
-          : `Анализ завершён за ${(result.responseTimeMs / 1000).toFixed(1)} с (${
-              result.modelName
-            }).`
+          ? `Analysis (${result.horizonHours ?? activeSettings.forecastHorizonHours}h) completed in ${(
+              result.responseTimeMs / 1000
+            ).toFixed(1)}s (${result.modelName})${sourceNote}${fallbackNote}.`
+          : `Анализ (${result.horizonHours ?? activeSettings.forecastHorizonHours}ч) завершён за ${(
+              result.responseTimeMs / 1000
+            ).toFixed(1)} с (${result.modelName})${sourceNote}${fallbackNote}.`
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -673,9 +710,7 @@ export default function App() {
       setIsAnalyzing(false);
       setAnalysisStepText('');
       if (settingsRef.current.autoModeEnabled) {
-        setNextAutoRunMs(
-          Date.now() + settingsRef.current.autoIntervalMinutes * 60 * 1000
-        );
+        setNextAutoRunMs(Date.now() + settingsRef.current.autoIntervalMinutes * 60 * 1000);
       }
     }
   }, [
@@ -688,16 +723,24 @@ export default function App() {
     refreshNews,
   ]);
 
-  // Один клик: запускает анализ и включает авто-режим (повтор через заданный период).
+  // Разовый запуск анализа без автоматического включения таймера.
   const handleAnalyzeClick = () => {
-    if (!settingsRef.current.autoModeEnabled) {
-      persistSettings({ ...settingsRef.current, autoModeEnabled: true });
-    }
     void runAnalysis();
   };
 
-  const handleStopAuto = () => {
-    persistSettings({ ...settingsRef.current, autoModeEnabled: false });
+  // Отдельное управление авто-режимом.
+  const handleToggleAuto = () => {
+    const nextEnabled = !settingsRef.current.autoModeEnabled;
+    persistSettings({ ...settingsRef.current, autoModeEnabled: nextEnabled });
+    if (nextEnabled) {
+      setInfoBannerText(
+        lang === 'en'
+          ? `Auto-analysis enabled (every ${settingsRef.current.autoIntervalMinutes} min).`
+          : `Авто-режим включён (каждые ${settingsRef.current.autoIntervalMinutes} мин).`
+      );
+    } else {
+      setInfoBannerText(lang === 'en' ? 'Auto-analysis stopped.' : 'Авто-режим остановлен.');
+    }
   };
 
   // Auto-mode timer setup
@@ -716,9 +759,7 @@ export default function App() {
       if (isAnalyzingRef.current) return;
       const remMs = nextAutoRunMs - Date.now();
       if (remMs <= 0) {
-        setNextAutoRunMs(
-          Date.now() + settingsRef.current.autoIntervalMinutes * 60 * 1000
-        );
+        setNextAutoRunMs(Date.now() + settingsRef.current.autoIntervalMinutes * 60 * 1000);
         void runAnalysis();
       } else {
         const totalSec = Math.floor(remMs / 1000);
@@ -756,17 +797,15 @@ export default function App() {
   const modelSelectorHint = useMemo(() => {
     if (settings.provider !== AiProviderType.Ollama) return '';
     if (availableOllamaModels.length > 0) return '';
-    return ollamaStatus.isConnected
-      ? t(lang, 'NoOllamaModelsShort')
-      : t(lang, 'OllamaOffline');
+    return ollamaStatus.isConnected ? t(lang, 'NoOllamaModelsShort') : t(lang, 'OllamaOffline');
   }, [settings.provider, availableOllamaModels.length, ollamaStatus.isConnected, lang]);
 
   const handleSaveSettings = (next: AppSettings) => {
     persistSettings(next);
     if (
-      next.minimizeToTrayOnClose &&
       typeof Notification !== 'undefined' &&
-      Notification.permission === 'default'
+      Notification.permission === 'default' &&
+      (next.notifyOnDirectionChange || next.notifyConfidenceThreshold > 0)
     ) {
       void Notification.requestPermission();
     }
@@ -790,14 +829,8 @@ export default function App() {
         setErrorBannerText(data.message);
       }
 
-      const desktop = (
-        window as unknown as {
-          pearlDesktop?: {
-            installUpdate: (url: string) => Promise<{ ok: boolean; error?: string }>;
-          };
-        }
-      ).pearlDesktop;
-      if (data.status === 'update_available' && data.downloadUrl && desktop) {
+      const desktop = getDesktopApi();
+      if (data.status === 'update_available' && data.downloadUrl && desktop?.installUpdate) {
         const agree = window.confirm(
           `${data.message}\n\nСкачать и установить сейчас? Программа закроется и запустится установщик.`
         );
@@ -919,20 +952,24 @@ export default function App() {
       <main className="flex-1 min-w-0 px-[22px] py-[18px] flex flex-col overflow-hidden">
         {/* Top Action Header */}
         <header className="bg-[#151D2E] border border-[#25324D] rounded-[14px] px-4 py-3 mb-3.5 flex flex-wrap items-center justify-between gap-3 shrink-0">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="bg-[#101624] border border-[#25324D] rounded-[8px] px-2.5 py-1.5 text-[12.5px] text-[#94A3B8]">
-              {lang === 'en' ? 'Region: ' : 'Область: '}
-              {formatRegionBadge(settings.captureRegion, lang)}
-            </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {!settings.useExchangeData && (
+              <>
+                <div className="bg-[#101624] border border-[#25324D] rounded-[8px] px-2.5 py-1.5 text-[12.5px] text-[#94A3B8]">
+                  {lang === 'en' ? 'Region: ' : 'Область: '}
+                  {formatRegionBadge(settings.captureRegion, lang)}
+                </div>
 
-            <button
-              type="button"
-              disabled={isAnalyzing}
-              onClick={() => setIsRegionModalOpen(true)}
-              className="bg-[#1B263B] hover:bg-[#24334F] text-[#F1F5F9] border border-[#25324D] hover:border-[#384E75] rounded-[10px] px-3.5 py-2 text-[13px] font-medium cursor-pointer disabled:opacity-45 transition-colors"
-            >
-              {t(lang, 'BtnSelectRegion')}
-            </button>
+                <button
+                  type="button"
+                  disabled={isAnalyzing}
+                  onClick={() => setIsRegionModalOpen(true)}
+                  className="bg-[#1B263B] hover:bg-[#24334F] text-[#F1F5F9] border border-[#25324D] hover:border-[#384E75] rounded-[10px] px-3 py-1.5 text-[12.5px] font-medium cursor-pointer disabled:opacity-45 transition-colors"
+                >
+                  {t(lang, 'BtnSelectRegion')}
+                </button>
+              </>
+            )}
 
             {liveStreamActive && (
               <button
@@ -946,43 +983,40 @@ export default function App() {
               </button>
             )}
 
-            <div className="bg-[#101624] border border-[#25324D] rounded-[8px] px-2.5 py-1.5 text-[12.5px] text-[#94A3B8]">
-              {t(lang, 'LabelScreenshotTime')}:{' '}
-              <span className="text-[#F1F5F9] font-semibold">
-                {screenshotCapturedAt
-                  ? new Date(screenshotCapturedAt).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      second: '2-digit',
-                    })
-                  : t(lang, 'ScreenshotNotTaken')}
+            {/* Forecast Horizon quick switch */}
+            <div className="bg-[#101624] border border-[#25324D] rounded-[8px] p-0.5 inline-flex items-center gap-0.5 text-[12px]">
+              <span className="px-2 text-[#94A3B8] inline-flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5 text-[#38BDF8]" />
+                {lang === 'en' ? 'Horizon:' : 'Горизонт:'}
               </span>
+              {([1, 2, 4] as ForecastHorizonHours[]).map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  disabled={isAnalyzing}
+                  onClick={() => persistSettings({ ...settings, forecastHorizonHours: h })}
+                  className={`px-2 py-1 rounded-[6px] font-semibold cursor-pointer transition-colors disabled:opacity-50 ${
+                    settings.forecastHorizonHours === h
+                      ? 'bg-[#00D4AA]/20 text-[#00D4AA]'
+                      : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                  }`}
+                >
+                  {h}
+                  {lang === 'en' ? 'h' : 'ч'}
+                </button>
+              ))}
             </div>
 
             <button
               type="button"
               onClick={() => setActiveTab(3)}
               title={t(lang, 'NavSettings')}
-              className={`border rounded-[8px] px-2.5 py-1.5 text-[12.5px] cursor-pointer transition-colors ${
-                settings.autoModeEnabled
-                  ? 'bg-[#00D4AA]/10 border-[#00D4AA]/30 text-[#F1F5F9]'
-                  : 'bg-[#101624] border-[#25324D] text-[#94A3B8] hover:border-[#384E75]'
-              }`}
+              className="bg-[#101624] border border-[#25324D] hover:border-[#384E75] rounded-[8px] px-2.5 py-1.5 text-[12.5px] text-[#94A3B8] cursor-pointer transition-colors"
             >
-              <span>
-                {t(lang, 'LabelUpdatePeriod')}:{' '}
-                <strong className="text-[#00D4AA]">
-                  {settings.autoIntervalMinutes} {t(lang, 'MinutesShort')}
-                </strong>
-              </span>
-              {settings.autoModeEnabled && autoCountdownText ? (
-                <span className="text-[#38BDF8] font-semibold ml-1.5">
-                  ({t(lang, 'AutoBadgePrefix')}
-                  {autoCountdownText})
-                </span>
-              ) : (
-                <span className="text-[#64748B] ml-1.5">• {t(lang, 'AutoStatusOff')}</span>
-              )}
+              {t(lang, 'LabelUpdatePeriod')}:{' '}
+              <strong className="text-[#00D4AA]">
+                {settings.autoIntervalMinutes} {t(lang, 'MinutesShort')}
+              </strong>
             </button>
 
             <button
@@ -1002,7 +1036,7 @@ export default function App() {
             </button>
           </div>
 
-          <div className="flex items-center gap-3.5 ml-auto">
+          <div className="flex items-center gap-2.5 ml-auto">
             {isAnalyzing && (
               <div className="flex items-center gap-2 text-[#00D4AA] text-[12.5px]">
                 <Loader2 className="w-[18px] h-[18px] animate-spin" />
@@ -1010,27 +1044,43 @@ export default function App() {
               </div>
             )}
 
-            {settings.autoModeEnabled && (
-              <button
-                type="button"
-                onClick={handleStopAuto}
-                className="bg-[#101624] hover:bg-[#1B263B] text-[#FCA5A5] border border-[#EF4444]/40 rounded-[10px] px-3 py-2 text-[12.5px] font-medium cursor-pointer transition-colors"
-              >
-                {lang === 'en' ? 'Stop auto' : 'Остановить авто'}
-                {autoCountdownText ? ` (${autoCountdownText})` : ''}
-              </button>
-            )}
+            {/* Separate Auto-Mode toggle button */}
+            <button
+              type="button"
+              onClick={handleToggleAuto}
+              className={`rounded-[10px] px-3 py-2 text-[12.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer transition-colors border ${
+                settings.autoModeEnabled
+                  ? 'bg-[#EF4444]/15 hover:bg-[#EF4444]/25 text-[#FCA5A5] border-[#EF4444]/40'
+                  : 'bg-[#1B263B] hover:bg-[#24334F] text-[#38BDF8] border-[#25324D] hover:border-[#38BDF8]'
+              }`}
+            >
+              {settings.autoModeEnabled ? (
+                <>
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                  <span>
+                    {t(lang, 'BtnStopAuto')}
+                    {autoCountdownText ? ` (${autoCountdownText})` : ''}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>{t(lang, 'BtnStartAuto')}</span>
+                </>
+              )}
+            </button>
 
+            {/* One-shot Analyze button */}
             <button
               type="button"
               disabled={isAnalyzing}
               title={
                 lang === 'en'
-                  ? 'Runs the analysis and keeps repeating it automatically'
-                  : 'Запускает анализ и дальше повторяет его сам'
+                  ? 'Run a single analysis now without changing Auto mode'
+                  : 'Выполнить разовый анализ сейчас (не включает авто-таймер)'
               }
               onClick={handleAnalyzeClick}
-              className="bg-[#00D4AA] hover:bg-[#22E7BF] active:scale-[0.97] text-[#071216] rounded-[10px] px-4 py-2 text-[13.5px] font-semibold min-w-[185px] cursor-pointer disabled:opacity-45 transition-all"
+              className="bg-[#00D4AA] hover:bg-[#22E7BF] active:scale-[0.97] text-[#071216] rounded-[10px] px-4 py-2 text-[13.5px] font-semibold min-w-[175px] cursor-pointer disabled:opacity-45 transition-all"
             >
               {isAnalyzing ? t(lang, 'BtnAnalyzing') : t(lang, 'BtnAnalyzeNow')}
             </button>
@@ -1079,9 +1129,7 @@ export default function App() {
               onRefreshMarket={() => void refreshMarket(true)}
               screenshotDataUrl={screenshotDataUrl}
               screenshotLabel={
-                screenshotDataUrl
-                  ? formatRegionBadge(settings.captureRegion, lang)
-                  : ''
+                screenshotDataUrl ? formatRegionBadge(settings.captureRegion, lang) : ''
               }
               screenshotCapturedAt={screenshotCapturedAt}
               useExchangeData={settings.useExchangeData}
