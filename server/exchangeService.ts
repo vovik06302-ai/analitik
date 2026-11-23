@@ -20,7 +20,7 @@ async function fetchJson(url: string, timeoutMs = TIMEOUT_MS): Promise<unknown> 
   const res = await fetch(url, {
     headers: {
       Accept: 'application/json',
-      'User-Agent': 'PearlAiAnalyst/1.0.26',
+      'User-Agent': 'PearlAiAnalyst/1.0.29',
     },
     signal: AbortSignal.timeout(timeoutMs),
   });

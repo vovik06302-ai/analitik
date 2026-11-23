@@ -324,7 +324,7 @@ export interface ProviderStatus {
   installedModels?: string[];
 }
 
-export const APP_VERSION = '1.0.26';
+export const APP_VERSION = '1.0.29';
 export const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 export const DEFAULT_OLLAMA_MODEL = 'qwen2.5vl:32b';
 export const FALLBACK_OLLAMA_MODEL = 'qwen2.5vl:7b';

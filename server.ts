@@ -181,7 +181,7 @@ async function fetchFeedSafe(
     const response = await fetch(parsedUrl.toString(), {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'PearlAiAnalyst/1.0.26 (+https://github.com/vovik06302-ai/analitik)',
+        'User-Agent': 'PearlAiAnalyst/1.0.29 (+https://github.com/vovik06302-ai/analitik)',
         Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml',
       },
     });
